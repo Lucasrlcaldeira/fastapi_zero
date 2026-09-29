@@ -1,17 +1,17 @@
+# Tipo usado para representar data e hora dos campos created_at e
+# updated_at.
 from datetime import datetime
 
-# Tipo usado para representar data e hora do campo created_at.
-from sqlalchemy import func
-
 # func dá acesso a funções do próprio banco de dados, como NOW()
-# (data/hora atual), usada abaixo para o valor padrão de created_at.
-from sqlalchemy.orm import Mapped, mapped_column, registry
+# (data/hora atual), usada abaixo para o valor padrão das datas.
+from sqlalchemy import func
 
 # Mapped: anotação de tipo que diz ao SQLAlchemy qual é o tipo da coluna.
 # mapped_column: configura detalhes de cada coluna (chave primária,
 # valor padrão, se é única etc.).
 # registry: "catálogo" que guarda o mapeamento entre classes Python e
 # tabelas do banco.
+from sqlalchemy.orm import Mapped, mapped_column, registry
 
 table_registry = registry()
 # Cria o registro que será usado para mapear todos os models do
@@ -40,8 +40,8 @@ class User:
     # E-mail; também precisa ser único.
 
     password: Mapped[str]
-    # Senha armazenada como texto simples (ainda sem hash/criptografia
-    # nesta fase do curso).
+    # Senha do usuário. O que fica salvo aqui é o HASH da senha (gerado
+    # por get_password_hash em security.py), nunca o texto digitado.
 
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
@@ -53,3 +53,7 @@ class User:
     updated_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now(), onupdate=func.now()
     )
+    # Data/hora da última alteração. server_default preenche na criação
+    # e onupdate=func.now() atualiza sozinho a cada UPDATE feito pelo
+    # SQLAlchemy. Essa coluna foi adicionada depois, pela migração
+    # eebc2e224646 (veja migrations/versions/).

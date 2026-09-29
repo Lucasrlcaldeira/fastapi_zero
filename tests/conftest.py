@@ -1,35 +1,41 @@
-from contextlib import contextmanager
-
 # Usado para criar o "gerenciador de contexto" _mock_db_time (permite
 # usar "with mock_db_time(...) as time:" nos testes).
-from datetime import datetime
+from contextlib import contextmanager
 
 # Tipo usado para representar a data fixa simulada nos testes.
-import pytest
+from datetime import datetime
 
 # Framework de testes usado no projeto.
-from fastapi.testclient import TestClient
+import pytest
 
 # Cliente HTTP de teste do próprio FastAPI — simula requisições sem
 # precisar subir um servidor de verdade.
-from sqlalchemy import create_engine, event
+from fastapi.testclient import TestClient
 
 # create_engine: cria a conexão com o banco de dados.
 # event: permite "escutar" eventos do SQLAlchemy (usado abaixo para
 # interceptar o momento de inserção de um registro).
-from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import create_engine, event
 
 # Sessão do SQLAlchemy — é através dela que se conversa com o banco
 # (adicionar, consultar, commitar dados).
-from fastapi_zero.app import app
+from sqlalchemy.orm import Session
 
-# Importa o "catálogo" de tabelas para poder criá-las/apagá-las nos
-# testes.
-from fastapi_zero.database import get_session
+# StaticPool: faz todas as conexões reaproveitarem a MESMA conexão.
+# Necessário com SQLite em memória: cada conexão nova teria um banco
+# vazio diferente, e o teste "perderia" as tabelas criadas.
+from sqlalchemy.pool import StaticPool
 
 # Importa a aplicação FastAPI já configurada, para testá-la.
+from fastapi_zero.app import app
+
+# A dependência original de sessão, que será trocada nos testes.
+from fastapi_zero.database import get_session
+
+# User e o "catálogo" de tabelas, para poder criá-las/apagá-las nos
+# testes.
 from fastapi_zero.models import User, table_registry
+from fastapi_zero.security import get_password_hash
 
 
 # Fixture = "preparação" que o pytest entrega pronta para os testes.
@@ -40,14 +46,22 @@ from fastapi_zero.models import User, table_registry
 def client(session):
     # Cliente de teste: simula requisições HTTP (get, post...) na sua API
     # sem precisar subir um servidor de verdade.
+    # Ela pede a fixture "session" como parâmetro: uma fixture pode
+    # depender de outra, e o pytest resolve a ordem sozinho.
     def get_session_override():
         return session
+        # Devolve a sessão do banco EM MEMÓRIA do teste, em vez da
+        # sessão do banco real (database.db).
 
     with TestClient(app) as client:
         app.dependency_overrides[get_session] = get_session_override
+        # "Troca a peça": toda rota que pedir Depends(get_session)
+        # vai receber get_session_override() no lugar. Assim os testes
+        # nunca mexem no banco de verdade.
         yield client
 
     app.dependency_overrides.clear()
+    # Desfaz a troca depois do teste, para não afetar outros testes.
 
 
 @pytest.fixture
@@ -119,10 +133,33 @@ def mock_db_time():
 
 
 @pytest.fixture
-def user(session):
-    user = User(username='Teste', email='test@test.com', password='testtest')
+def user(session: Session):
+    # Cria um usuário já salvo no banco de teste, para os testes que
+    # precisam de alguém cadastrado (ex: login, update, delete).
+    password = 'testtest'
+    user = User(
+        username='Teste',
+        email='test@test.com',
+        password=get_password_hash(password),
+    )
+    # A senha é salva como hash, igual à rota de criação faz.
     session.add(user)
     session.commit()
     session.refresh(user)
 
+    user.clean_password = password
+    # "Pendura" a senha original (texto puro) no objeto. Ela não é
+    # coluna do banco, só um atributo extra para os testes conseguirem
+    # fazer login, já que o hash não pode ser revertido.
     return user
+
+
+@pytest.fixture
+def token(client, user):
+    response = client.post(
+        '/token',
+        data={'username': user.email, 'password': user.clean_password},
+    )
+    return response.json()['access_token']
+    # Faz login com o usuário de teste e devolve o token JWT, para os
+    # testes de rotas protegidas mandarem no header Authorization.

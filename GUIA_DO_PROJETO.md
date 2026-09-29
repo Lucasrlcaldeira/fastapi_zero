@@ -13,16 +13,25 @@ Serve como material de apoio para o curso de FastAPI que você está fazendo.
 
 - Nome do projeto (`fastapi-zero`), versão, autor.
 - Versão mínima do Python exigida (3.13+).
-- **Dependências de produção**: FastAPI, SQLAlchemy, Pydantic Settings,
-  Alembic.
+- **Dependências de produção**:
+  - `fastapi[standard]` — o framework da API.
+  - `sqlalchemy` — ORM para conversar com o banco de dados.
+  - `pydantic-settings` — leitura das configurações do `.env`.
+  - `alembic` — migrações do banco de dados.
+  - `pwdlib[argon2]` — gera e confere **hashes de senha** (algoritmo
+    Argon2).
+  - `pyjwt` — cria e valida os **tokens JWT** usados no login.
+  - `tzdata` — base de fusos horários (necessária no Windows para o
+    `ZoneInfo('UTC')` usado no `security.py`).
 - **Dependências de desenvolvimento**: Ruff (lint/formatação), Pytest
   (testes), pytest-cov (cobertura de testes), Taskipy (atalhos de comando).
 - Configurações do Ruff: linha máxima de 79 caracteres, aspas simples.
 - Atalhos de comando via `task` (Taskipy), por exemplo:
   - `task run` → sobe o servidor de desenvolvimento.
-  - `task test` → roda os testes com cobertura.
+  - `task test` → roda o lint, depois os testes com cobertura, e por fim
+    gera o relatório HTML (`pre_test` e `post_test` rodam sozinhos).
   - `task lint` → verifica o código com o Ruff.
-  - `task format` → formata o código automaticamente.
+  - `task format` → corrige o que dá automaticamente e formata o código.
 
 ### `poetry.lock`
 Arquivo gerado **automaticamente** pelo Poetry. Ele trava as versões exatas
@@ -46,6 +55,11 @@ Lista de arquivos e pastas que o **Git** deve ignorar (não versionar), como
 (`.ruff_cache`, `.pytest_cache`), etc. Evita que "lixo" ou dados sensíveis
 sejam enviados ao repositório.
 
+> 💡 As primeiras linhas do arquivo (`Collecting ignr`, `Downloading...`)
+> são sobra da saída do comando que gerou o `.gitignore`. Não atrapalham
+> (o Git as trata como padrões que não casam com nada), mas podem ser
+> apagadas.
+
 ### `alembic.ini`
 Arquivo de configuração do **Alembic**, a ferramenta que gerencia
 **migrações de banco de dados** (mudanças estruturais versionadas, como
@@ -61,6 +75,7 @@ faz parte do código-fonte que você escreve.
 
 ### `README.md`
 Está vazio no momento — ainda não há documentação escrita sobre o projeto.
+Quando for publicar no GitHub, vale preencher (veja o fim deste guia).
 
 ### `.coverage`
 Arquivo binário gerado automaticamente pelo `pytest-cov` com os dados
@@ -77,20 +92,84 @@ Esta é a pasta principal do pacote Python da aplicação.
 O **coração da API**. Aqui é criada a instância do FastAPI
 (`app = FastAPI()`) e definidas todas as rotas (endpoints):
 
-| Rota | Método | O que faz |
-|---|---|---|
-| `/` | GET | Retorna `{"message": "Hello World"}` (rota de teste/saúde) |
-| `/users/` | POST | Cria um novo usuário |
-| `/users/` | GET | Lista todos os usuários |
-| `/users/{user_id}` | PUT | Atualiza um usuário pelo ID |
-| `/users/{user_id}` | DELETE | Remove um usuário pelo ID |
-| `/users/{user_id}` | GET | Busca um usuário específico pelo ID |
+| Rota | Método | Precisa de token? | O que faz |
+|---|---|---|---|
+| `/` | GET | Não | Retorna `{"message": "Hello World"}` (rota de teste/saúde) |
+| `/users/` | POST | Não | Cria um novo usuário (cadastro) |
+| `/users/` | GET | **Sim** | Lista os usuários, com paginação (`limit`/`offset`) |
+| `/users/{user_id}` | GET | Não | Busca um usuário específico pelo ID |
+| `/users/{user_id}` | PUT | **Sim** | Atualiza o **próprio** usuário |
+| `/users/{user_id}` | DELETE | **Sim** | Remove o **próprio** usuário |
+| `/token` | POST | Não | Login: recebe e-mail e senha e devolve um token JWT |
 
-⚠️ **Importante**: neste estágio do curso, os usuários ainda são guardados
-numa lista Python em memória (`database = []`), **não** no banco de dados
-SQLite de verdade. Isso é comum nas primeiras aulas, antes de integrar o
-SQLAlchemy nas rotas. As rotas de `PUT`, `DELETE` e `GET` por ID retornam
-erro `404 Not Found` se o `user_id` não existir na lista.
+Pontos importantes:
+
+- Todas as rotas usam o **banco de dados real** através de uma sessão do
+  SQLAlchemy, recebida com `Depends(get_session)`.
+- As senhas são salvas como **hash** (`get_password_hash`), nunca como
+  texto puro.
+- Rotas protegidas pedem `Depends(get_current_user)`. Sem um token válido
+  no header `Authorization: Bearer <token>`, elas devolvem **401**.
+- No `PUT` e no `DELETE`, se o `user_id` da URL for diferente do usuário
+  logado, a resposta é **403 (Forbidden)**: cada um só mexe na própria
+  conta.
+- Tentar cadastrar ou atualizar para um username/e-mail que já existe
+  devolve **409 (Conflict)**.
+- No login, o campo do formulário se chama `username` (é o padrão do
+  OAuth2), mas o valor esperado é o **e-mail**.
+
+#### Códigos HTTP usados no projeto
+
+| Código | Nome | Quando aparece |
+|---|---|---|
+| 200 | OK | Deu certo |
+| 201 | Created | Usuário criado |
+| 401 | Unauthorized | Token ausente/inválido ou senha errada — "não sei quem você é" |
+| 403 | Forbidden | Logado, mas sem permissão — "sei quem você é, mas não pode" |
+| 404 | Not Found | Usuário não encontrado |
+| 409 | Conflict | Username ou e-mail já cadastrado |
+
+### `security.py`
+Concentra tudo o que é **segurança**:
+
+- `get_password_hash(password)`: transforma a senha em hash (Argon2). O
+  hash é irreversível e muda a cada chamada, por causa do *salt*
+  aleatório.
+- `verify_password(senha, hash)`: confere se a senha digitada corresponde
+  ao hash salvo.
+- `create_access_token(data)`: cria um **token JWT** com os dados
+  recebidos + o campo `exp` (expira em 30 minutos), assinado com a
+  `SECRET_KEY`.
+- `oauth2_scheme`: ensina o FastAPI a pegar o token do header
+  `Authorization` e faz aparecer o botão **Authorize** no `/docs`.
+- `get_current_user(...)`: **dependência** das rotas protegidas. Decodifica
+  o token, lê o e-mail guardado em `sub` e busca o usuário no banco. Se
+  algo falhar, devolve 401.
+
+**Como funciona o login, passo a passo:**
+1. O cliente faz `POST /token` com e-mail e senha (form-data).
+2. A API confere a senha com `verify_password`.
+3. Se estiver certa, gera um token com `{'sub': email}` e devolve.
+4. Nas próximas requisições, o cliente manda o header
+   `Authorization: Bearer <token>`.
+5. `get_current_user` valida o token e entrega o usuário para a rota.
+
+> ⚠️ **Sobre o JWT**: o conteúdo do token **não é secreto** — qualquer um
+> pode decodificá-lo (teste em jwt.io). A assinatura só garante que ele
+> **não foi alterado**. Por isso nunca coloque a senha dentro do token.
+
+> ⚠️ **Sobre a `SECRET_KEY`**: por enquanto ela está escrita direto no
+> código (`'your-secret-key'`). Em um projeto real ela deve ir para o
+> `.env` e ser lida pelo `Settings`.
+
+### `database.py`
+Cria a conexão com o banco:
+
+- `engine`: o "motor" de conexão, criado **uma vez** com a
+  `DATABASE_URL` do `.env`.
+- `get_session()`: dependência que abre uma `Session` para cada
+  requisição, entrega para a rota com `yield` e fecha ao final (graças ao
+  `with`). Nos testes, ela é trocada por uma sessão de banco em memória.
 
 ### `models.py`
 Define o **modelo `User`** usando o SQLAlchemy (ORM — Object-Relational
@@ -100,13 +179,17 @@ Mapper, que mapeia classes Python para tabelas do banco de dados). A tabela
 - `id`: chave primária, gerada automaticamente.
 - `username`: texto único (não pode repetir).
 - `email`: texto único (não pode repetir).
-- `password`: texto.
+- `password`: o **hash** da senha.
 - `created_at`: data/hora de criação, preenchida automaticamente pelo
   próprio banco (`server_default=func.now()`).
+- `updated_at`: data/hora da última alteração. Preenchida na criação e
+  atualizada a cada `UPDATE` (`onupdate=func.now()`).
 
 Usa o estilo moderno do SQLAlchemy 2.0, com `Mapped` (tipagem) e
 `mapped_as_dataclass` (transforma a classe num dataclass Python, o que
-facilita comparações e criação de instâncias).
+facilita comparações e criação de instâncias). Campos com `init=False`
+(`id`, `created_at`, `updated_at`) não são passados na criação do objeto,
+porque quem preenche é o banco.
 
 ### `schemas.py`
 Define os **"contratos" de dados** da API usando Pydantic — cada classe é
@@ -116,17 +199,18 @@ validada automaticamente (tipos, formatos, obrigatoriedade):
 - `UserSchemas`: dados que o **cliente envia** para criar/atualizar um
   usuário (`username`, `email`, `password`).
 - `UserPublic`: dados que a API **devolve** ao cliente — repare que **não
-  inclui a senha**, por segurança!
-- `UserDB`: representação interna do usuário, com `id` incluso (herda de
-  `UserSchemas`).
+  inclui a senha**, por segurança! Tem `from_attributes=True`, que permite
+  montá-lo direto a partir de um objeto `User` do SQLAlchemy.
 - `UserList`: uma lista de `UserPublic`, usada na rota de listagem
   (`GET /users/`).
+- `Token`: resposta do login, com `access_token` e `token_type`
+  (`"Bearer"`).
 
 ### `settings.py`
 Lê as variáveis de ambiente do arquivo `.env` de forma **tipada e
 validada**, usando a biblioteca `pydantic-settings`. Atualmente expõe
-apenas `DATABASE_URL`, que é usada pelo Alembic (e futuramente pela
-aplicação) para saber a qual banco se conectar.
+apenas `DATABASE_URL`, usada pelo `database.py` (aplicação) e pelo
+`migrations/env.py` (Alembic) para saber a qual banco se conectar.
 
 ### `__init__.py`
 Arquivo vazio. Sua única função é marcar a pasta `fastapi_zero` como um
@@ -150,16 +234,26 @@ Um **template** (modelo) usado pelo Alembic para gerar novos arquivos de
 migração. Contém placeholders (`${...}`) que são preenchidos
 automaticamente toda vez que você roda `alembic revision`.
 
-### `versions/2ba89507e184_create_users_table.py`
-A primeira (e, por enquanto, única) **migração real** do projeto. Define
-duas funções:
-- `upgrade()`: cria a tabela `users` com todas as suas colunas e
-  restrições (chave primária, campos únicos).
-- `downgrade()`: desfaz essa mudança, removendo a tabela — usado caso você
-  precise "voltar no tempo" o esquema do banco.
-
+### `versions/` — as migrações, em ordem
 Cada migração é como um "commit do Git", mas para a estrutura do banco de
-dados.
+dados. Cada arquivo aponta para a anterior (`down_revision`), formando uma
+corrente:
+
+| Ordem | Arquivo | O que faz |
+|---|---|---|
+| 1 | `2ba89507e184_create_users_table.py` | Cria a tabela `users` (id, username, email, password, created_at) |
+| 2 | `eebc2e224646_add_updated_at_to_users.py` | Adiciona a coluna `updated_at` |
+| 3 | `ced0fbd8d4db_exercicio_02_aula_04.py` | Migração **vazia** (`pass`) — foi gerada no exercício, mas não havia mudança a aplicar |
+
+Toda migração tem duas funções:
+- `upgrade()`: aplica a mudança (`alembic upgrade head`).
+- `downgrade()`: desfaz a mudança (`alembic downgrade -1`) — usado caso
+  você precise "voltar no tempo" o esquema do banco.
+
+Comandos mais usados:
+- `alembic revision --autogenerate -m "mensagem"` → compara os models com
+  o banco e gera uma nova migração.
+- `alembic upgrade head` → aplica todas as migrações pendentes.
 
 ### `README`
 Um texto padrão de uma linha, gerado automaticamente pelo Alembic ao
@@ -172,36 +266,63 @@ inicializar a pasta de migrações. Não tem conteúdo específico do projeto.
 ### `conftest.py`
 Define as **fixtures** do Pytest — funções que preparam dados/objetos
 reutilizáveis pelos testes (o Pytest as injeta automaticamente quando o
-teste pede o nome como parâmetro):
+teste pede o nome como parâmetro). Uma fixture pode depender de outra:
 
-- `client`: um cliente HTTP de teste (`TestClient`) que simula requisições
-  (`GET`, `POST`, etc.) à API **sem precisar subir um servidor real**.
 - `session`: cria um banco de dados SQLite **temporário, em memória**
   (`sqlite:///:memory:`) para cada teste — rápido e isolado. Cria as
-  tabelas antes do teste rodar e as apaga depois, garantindo que cada
-  teste comece com um banco limpo.
+  tabelas antes do teste rodar e as apaga depois. Usa `StaticPool` para
+  que todas as conexões enxerguem o mesmo banco em memória.
+- `client`: um cliente HTTP de teste (`TestClient`) que simula requisições
+  à API **sem subir um servidor real**. Usa
+  `app.dependency_overrides` para trocar o `get_session` da aplicação pela
+  sessão em memória — assim os testes **nunca tocam no `database.db`**.
+- `user`: cria um usuário já salvo no banco de teste (com a senha em
+  hash) e guarda a senha original em `user.clean_password`, para os
+  testes conseguirem fazer login.
+- `token`: faz login com o `user` na rota `/token` e devolve o token JWT,
+  pronto para ser usado nas rotas protegidas.
 - `mock_db_time`: um truque (usando eventos do SQLAlchemy) para "congelar"
-  o campo `created_at` numa data fixa durante os testes, evitando que
-  testes falhem por causa da hora exata em que rodaram.
+  `created_at` e `updated_at` numa data fixa durante os testes, evitando
+  que falhem por causa da hora exata em que rodaram.
+
+Encadeamento das fixtures:
+```
+session ──► client ──► token
+   └──────► user ─────────┘
+```
 
 ### `test_app.py`
 Testa as **rotas da API** definidas em `app.py`:
 - Rota raiz (`/`).
-- Criação de usuário (`POST /users/`).
-- Listagem de usuários (`GET /users/`).
-- Atualização de usuário (`PUT /users/{id}`).
-- Remoção de usuário (`DELETE /users/{id}`).
-- Casos de erro `404` quando o usuário não existe.
+- Criação de usuário (`POST /users/`) e erro 409 com e-mail repetido.
+- Listagem de usuários com token (`GET /users/`).
+- Atualização do próprio usuário (`PUT /users/{id}`) e erro 409 ao usar
+  um username que já é de outra pessoa.
+- Remoção do próprio usuário (`DELETE /users/{id}`).
+- Erro 403 ao tentar alterar/remover outro usuário.
+- Busca de um usuário pelo id (`GET /users/{id}`) — exercício do curso.
+- Login (`POST /token`) devolvendo um token do tipo `Bearer`.
 
-Há dois testes comentados no final do arquivo (`test_exercicio_ok` e
-`test_exercicio_not_ok`), que parecem ser **exercícios do curso ainda não
-implementados** — provavelmente testando a rota `GET /users/{user_id}`.
+Há um teste comentado (`test_exercicio_not_ok`), que confere o 404 de
+`GET /users/{id}` com id inexistente. A rota já trata esse caso, então
+ele pode ser descomentado.
 
 ### `test_db.py`
 Testa o **modelo `User`** diretamente no banco de dados (sem passar pela
 API): cria um usuário, salva na sessão do banco e confere se os dados
-batem, usando a fixture `mock_db_time` para fixar a data de criação e
-tornar o teste previsível.
+batem, usando a fixture `mock_db_time` para fixar `created_at` e
+`updated_at` e tornar o teste previsível.
+
+### `test_security.py`
+Testa a parte de **segurança**:
+- `test_jwt`: gera um token com `create_access_token`, decodifica e
+  confere se os dados e o campo `exp` estão lá.
+- `test_jwt_invalid_token`: chama uma rota protegida com um token falso e
+  espera **401**.
+- `test_get_current_user_not_found__exercicio`: token válido, mas sem o
+  campo `sub` — espera **401**.
+- `test_get_current_user_does_not_exists__exercicio`: token válido com
+  `sub` de um e-mail que não está cadastrado — espera **401**.
 
 ### `__init__.py`
 Arquivo vazio, apenas marca a pasta `tests` como um pacote Python.
@@ -224,16 +345,27 @@ nem editadas manualmente — normalmente ficam no `.gitignore`:
 
 ## 🧭 Resumo geral do projeto
 
-É uma API FastAPI de estudo (o nome sugere o curso **"FastAPI do Zero"**)
-que implementa um **CRUD de usuários** (Create, Read, Update, Delete).
+É uma API FastAPI de estudo (curso **"FastAPI do Zero"**, do Dunossauro)
+que implementa um **CRUD de usuários** (Create, Read, Update, Delete) com
+**autenticação por JWT**.
 
-O projeto está em uma fase de **transição**:
-- As rotas em `app.py` ainda usam uma **lista Python em memória** como
-  "banco de dados" (dados somem quando o servidor reinicia).
-- A infraestrutura para o banco de dados **real** já está pronta e
-  testada: o model SQLAlchemy (`models.py`), as migrações do Alembic
-  (`migrations/`) e os testes de banco (`test_db.py`).
+O que já está pronto:
+- ✅ Rotas conectadas ao **banco de dados real** (SQLite via SQLAlchemy).
+- ✅ Estrutura do banco versionada com **migrações do Alembic**.
+- ✅ Senhas guardadas com **hash (Argon2)**.
+- ✅ **Login** com token JWT e rotas **protegidas**.
+- ✅ Regra de **autorização**: cada usuário só altera/apaga a si mesmo.
+- ✅ **Testes automatizados** isolados, usando banco em memória.
 
-O próximo passo natural do curso deve ser **conectar as rotas de
-`app.py` ao banco de dados real** (usando `Session` do SQLAlchemy),
-substituindo a lista `database = []` por consultas de verdade ao SQLite.
+Pontos que ainda podem evoluir (alguns aparecem nas próximas aulas do
+curso):
+- Mover a `SECRET_KEY`, o `ALGORITHM` e o tempo de expiração do token para
+  o `.env`/`Settings`.
+- Tratar o **token expirado**: hoje só o `DecodeError` é capturado, então
+  um token vencido (`ExpiredSignatureError`) causaria erro 500 em vez de
+  401.
+- No login, usar 401 também quando o e-mail não existe (hoje é 404), para
+  não revelar quais e-mails estão cadastrados.
+- Descomentar o `test_exercicio_not_ok`.
+- Escrever o `README.md` (o que o projeto faz, como instalar, como rodar e
+  testar) — importante para o portfólio no GitHub.
