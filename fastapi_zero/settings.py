@@ -17,3 +17,12 @@ class Settings(BaseSettings):
     # Declara que deve existir uma variável DATABASE_URL (texto) no
     # ".env". Se ela não existir, a aplicação falha ao iniciar — isso
     # é proposital, para evitar rodar sem saber a qual banco conectar.
+
+    SECRET_KEY: str
+    # Chave secreta usada para ASSINAR os tokens. Quem conhece essa chave
+    # consegue criar tokens válidos, então em um projeto real ela deve ficar
+    # no ".env", nunca escrita direto no código.
+    ALGORITHM: str
+    # Algoritmo de assinatura do JWT (HMAC com SHA-256).
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+    # Tempo de vida do token: depois de 30 minutos é preciso logar de novo.

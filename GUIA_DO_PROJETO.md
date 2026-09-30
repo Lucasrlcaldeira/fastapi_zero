@@ -292,20 +292,24 @@ session ──► client ──► token
 ```
 
 ### `test_app.py`
-Testa as **rotas da API** definidas em `app.py`:
-- Rota raiz (`/`).
+Testa a **rota raiz** (`/`) definida em `app.py`, que devolve
+`{'message': 'Hello World'}`.
+
+### `test_users.py`
+Testa as **rotas de usuários** (`routers/users.py`):
 - Criação de usuário (`POST /users/`) e erro 409 com e-mail repetido.
 - Listagem de usuários com token (`GET /users/`).
 - Atualização do próprio usuário (`PUT /users/{id}`) e erro 409 ao usar
   um username que já é de outra pessoa.
 - Remoção do próprio usuário (`DELETE /users/{id}`).
 - Erro 403 ao tentar alterar/remover outro usuário.
-- Busca de um usuário pelo id (`GET /users/{id}`) — exercício do curso.
-- Login (`POST /token`) devolvendo um token do tipo `Bearer`.
+- Busca de um usuário pelo id (`GET /users/{id}`), um exercício do
+  curso: `test_read_user_exercicio` confere o 200 e
+  `test_exercicio_not_ok` confere o 404 quando o id não existe.
 
-Há um teste comentado (`test_exercicio_not_ok`), que confere o 404 de
-`GET /users/{id}` com id inexistente. A rota já trata esse caso, então
-ele pode ser descomentado.
+### `test_auth.py`
+Testa o **login** (`POST /auth/token`): envia e-mail e senha como
+formulário e confere se volta um `access_token` do tipo `Bearer`.
 
 ### `test_db.py`
 Testa o **modelo `User`** diretamente no banco de dados (sem passar pela
@@ -366,6 +370,5 @@ curso):
   401.
 - No login, usar 401 também quando o e-mail não existe (hoje é 404), para
   não revelar quais e-mails estão cadastrados.
-- Descomentar o `test_exercicio_not_ok`.
 - Escrever o `README.md` (o que o projeto faz, como instalar, como rodar e
   testar) — importante para o portfólio no GitHub.

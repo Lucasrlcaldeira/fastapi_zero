@@ -36,6 +36,7 @@ from fastapi_zero.database import get_session
 # testes.
 from fastapi_zero.models import User, table_registry
 from fastapi_zero.security import get_password_hash
+from fastapi_zero.settings import Settings
 
 
 # Fixture = "preparação" que o pytest entrega pronta para os testes.
@@ -157,9 +158,14 @@ def user(session: Session):
 @pytest.fixture
 def token(client, user):
     response = client.post(
-        '/token',
+        '/auth/token',
         data={'username': user.email, 'password': user.clean_password},
     )
     return response.json()['access_token']
     # Faz login com o usuário de teste e devolve o token JWT, para os
     # testes de rotas protegidas mandarem no header Authorization.
+
+
+@pytest.fixture
+def settings():
+    return Settings()

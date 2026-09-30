@@ -22,16 +22,9 @@ from sqlalchemy.orm import Session
 
 from fastapi_zero.database import get_session
 from fastapi_zero.models import User
+from fastapi_zero.settings import Settings
 
-SECRET_KEY = 'your-secret-key'
-# Chave secreta usada para ASSINAR os tokens. Quem conhece essa chave
-# consegue criar tokens válidos, então em um projeto real ela deve ficar
-# no ".env", nunca escrita direto no código.
-ALGORITHM = 'HS256'
-# Algoritmo de assinatura do JWT (HMAC com SHA-256).
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-# Tempo de vida do token: depois de 30 minutos é preciso logar de novo.
-
+settings = Settings()
 
 pwd_context = PasswordHash.recommended()
 # Cria o "gerador de hash" com o algoritmo recomendado pela pwdlib
@@ -56,7 +49,7 @@ def create_access_token(data: dict):
     # Copia o dicionário para não alterar o original de quem chamou.
 
     expire = datetime.now(tz=ZoneInfo('UTC')) + timedelta(
-        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
     # Momento exato em que o token deixa de valer: agora + 30 minutos.
 
@@ -64,7 +57,9 @@ def create_access_token(data: dict):
     # "exp" é um campo padrão do JWT. A biblioteca jwt checa sozinha se
     # o token já expirou ao fazer o decode.
 
-    encode_jwt = encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encode_jwt = encode(
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
+    )
     # Gera o token: um texto em 3 partes (cabeçalho.dados.assinatura).
     # Os dados NÃO são criptografados (qualquer um consegue ler), mas a
     # assinatura impede que alguém os altere sem a SECRET_KEY.
@@ -72,7 +67,7 @@ def create_access_token(data: dict):
     return encode_jwt
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl='token')
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl='auth/token')
 # Diz ao FastAPI que o token é obtido na rota "/token". Isso também faz
 # aparecer o botão "Authorize" na documentação automática (/docs).
 
@@ -95,9 +90,15 @@ def get_current_user(
     # ele precisa se autenticar com um token Bearer.
 
     try:
-        payload = decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = decode(
+            token, settings.SECRET_KEY, algorithms=settings.ALGORITHM
+        )
         # Confere a assinatura e a validade do token e devolve os dados
         # que foram guardados nele (o "payload").
+        # Atenção: no decode é "algorithms" (plural, uma LISTA dos
+        # algoritmos aceitos); no encode é "algorithm" (singular). Com o
+        # nome errado, o PyJWT lança DecodeError e toda rota protegida
+        # devolve 401.
         subject_email = payload.get('sub')
         # Pega o dono do token (colocado como "sub" no login).
 

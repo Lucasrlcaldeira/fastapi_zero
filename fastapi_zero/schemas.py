@@ -3,7 +3,7 @@
 # ConfigDict: usado para configurar o comportamento de um schema.
 # EmailStr: tipo especial que valida se o texto tem formato de e-mail
 # válido (ex: precisa ter "@" e domínio).
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class Message(BaseModel):
@@ -42,3 +42,8 @@ class Token(BaseModel):
     # O token JWT em si (um texto longo, em 3 partes separadas por ".").
     token_type: str
     # O tipo do token; aqui sempre "Bearer".
+
+
+class FilterPage(BaseModel):
+    offset: int = Field(ge=0, default=0)
+    limit: int = Field(ge=0, default=10)

@@ -3,16 +3,21 @@ from http import HTTPStatus
 # decode: usado para "abrir" o token gerado e conferir o conteúdo.
 from jwt import decode
 
-from fastapi_zero.security import ALGORITHM, SECRET_KEY, create_access_token
+from fastapi_zero.security import create_access_token
+
+# SECRET_KEY e ALGORITHM agora moram no Settings (lidos do .env), e não
+# mais como constantes soltas no security.py.
 
 
-def test_jwt():
+def test_jwt(settings):
     # Testa a função create_access_token diretamente, sem passar pela API.
 
     data = {'test': 'test'}
     token = create_access_token(data)
 
-    decoded = decode(token, SECRET_KEY, algorithms=ALGORITHM)
+    decoded = decode(
+        token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+    )
     # Decodifica com a mesma chave e o mesmo algoritmo usados para criar.
 
     assert decoded['test'] == data['test']
