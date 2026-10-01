@@ -8,18 +8,22 @@ from datetime import datetime
 # Framework de testes usado no projeto.
 import pytest
 
+# pytest_asyncio: plugin que ensina o pytest a rodar fixtures e
+# testes assíncronos (async def), que usam await.
+import pytest_asyncio
+
 # Cliente HTTP de teste do próprio FastAPI — simula requisições sem
 # precisar subir um servidor de verdade.
 from fastapi.testclient import TestClient
 
-# create_engine: cria a conexão com o banco de dados.
 # event: permite "escutar" eventos do SQLAlchemy (usado abaixo para
 # interceptar o momento de inserção de um registro).
-from sqlalchemy import create_engine, event
+from sqlalchemy import event
 
-# Sessão do SQLAlchemy — é através dela que se conversa com o banco
-# (adicionar, consultar, commitar dados).
-from sqlalchemy.orm import Session
+# AsyncSession: sessão assíncrona do SQLAlchemy — é através dela que
+# se conversa com o banco (adicionar, consultar, commitar dados).
+# create_async_engine: cria a conexão com o banco no modo assíncrono.
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 # StaticPool: faz todas as conexões reaproveitarem a MESMA conexão.
 # Necessário com SQLite em memória: cada conexão nova teria um banco
@@ -65,35 +69,42 @@ def client(session):
     # Desfaz a troca depois do teste, para não afetar outros testes.
 
 
-@pytest.fixture
-def session():
+@pytest_asyncio.fixture
+# Fixture assíncrona usa o decorador do pytest_asyncio: o
+# @pytest.fixture comum não sabe "esperar" (await) uma função async.
+async def session():
     # Banco SQLite na memória RAM: rápido e some ao final,
     # então cada teste começa com um banco limpo.
-    engine = create_engine(
-        'sqlite:///:memory:',
+    engine = create_async_engine(
+        'sqlite+aiosqlite:///:memory:',
         connect_args={'check_same_thread': False},
         poolclass=StaticPool,
     )
     # Cria uma "engine" (motor de conexão) para um banco SQLite que
     # existe só na memória RAM, nunca é salvo em disco.
+    # "sqlite+aiosqlite" usa o driver assíncrono aiosqlite, o mesmo
+    # tipo de driver usado pela aplicação de verdade.
 
-    # Cria no banco todas as tabelas definidas nos seus models.
-    table_registry.metadata.create_all(engine)
-    # Usa o metadata (definições de tabelas) para criar fisicamente as
-    # tabelas nesse banco em memória, antes do teste rodar.
+    async with engine.begin() as conn:
+        await conn.run_sync(table_registry.metadata.create_all)
+    # Cria no banco todas as tabelas definidas nos models, antes do
+    # teste rodar. engine.begin() abre uma conexão com transação.
+    # create_all é uma função SÍNCRONA, então run_sync() a executa
+    # "por dentro" da conexão assíncrona.
 
-    # Abre uma sessão (a "conversa" com o banco) e fecha sozinha ao terminar.
-    with Session(engine) as session:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        # expire_on_commit=False: mantém os valores dos objetos depois
+        # do commit (veja a explicação em database.py).
         # `yield` entrega a sessão ao teste e pausa aqui.
         # Quando o teste acaba, a função continua a partir desta linha.
         yield session
         # Pausa a execução aqui e entrega "session" para o teste usar;
         # quando o teste termina, a execução volta a partir daqui.
 
-    # Limpeza: apaga as tabelas depois do teste.
-    table_registry.metadata.drop_all(engine)
-    # Remove todas as tabelas, garantindo que o próximo teste comece
-    # do zero (isolamento entre testes).
+    async with engine.begin() as conn:
+        await conn.run_sync(table_registry.metadata.drop_all)
+    # Limpeza: apaga as tabelas depois do teste, garantindo que o
+    # próximo comece do zero (isolamento entre testes).
 
 
 @contextmanager
@@ -133,8 +144,9 @@ def mock_db_time():
     # poderem chamá-la com "mock_db_time(model=User)".
 
 
-@pytest.fixture
-def user(session: Session):
+@pytest_asyncio.fixture
+# Também é async, porque salva o usuário no banco com await.
+async def user(session: AsyncSession):
     # Cria um usuário já salvo no banco de teste, para os testes que
     # precisam de alguém cadastrado (ex: login, update, delete).
     password = 'testtest'
@@ -145,8 +157,10 @@ def user(session: Session):
     )
     # A senha é salva como hash, igual à rota de criação faz.
     session.add(user)
-    session.commit()
-    session.refresh(user)
+    await session.commit()
+    await session.refresh(user)
+    # commit grava no banco; refresh relê o registro para preencher
+    # o id e as datas. Os dois vão ao banco, por isso levam await.
 
     user.clean_password = password
     # "Pendura" a senha original (texto puro) no objeto. Ela não é

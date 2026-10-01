@@ -18,7 +18,9 @@ from jwt import DecodeError, decode, encode
 # PasswordHash: biblioteca que gera e confere hashes de senha.
 from pwdlib import PasswordHash
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+
+# AsyncSession: tipo da sessão assíncrona com o banco.
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_zero.database import get_session
 from fastapi_zero.models import User
@@ -72,14 +74,17 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl='auth/token')
 # aparecer o botão "Authorize" na documentação automática (/docs).
 
 
-def get_current_user(
-    session: Session = Depends(get_session),
+async def get_current_user(
+    session: AsyncSession = Depends(get_session),
     token: str = Depends(oauth2_scheme),
 ):
     # Dependência usada pelas rotas protegidas. Ela recebe o token do
     # header, valida e devolve o User dono dele.
     # Uma dependência pode depender de outras: aqui ela mesma pede a
     # sessão do banco e o token.
+    # Ela também virou "async def", porque busca o usuário no banco
+    # com await. O FastAPI sabe chamar dependências síncronas e
+    # assíncronas, então as rotas continuam usando do mesmo jeito.
     credentials_exception = HTTPException(
         status_code=HTTPStatus.UNAUTHORIZED,
         detail='Could not validate credentials',
@@ -109,7 +114,9 @@ def get_current_user(
         raise credentials_exception
         # Token malformado ou com assinatura inválida.
 
-    user = session.scalar(select(User).where(User.email == subject_email))
+    user = await session.scalar(
+        select(User).where(User.email == subject_email)
+    )
     # O token é válido, mas o usuário ainda existe? (ele pode ter sido
     # apagado depois que o token foi gerado).
 

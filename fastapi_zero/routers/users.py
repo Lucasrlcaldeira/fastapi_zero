@@ -10,8 +10,9 @@ from sqlalchemy import or_, select
 # salvar um username que já existe numa coluna unique=True).
 from sqlalchemy.exc import IntegrityError
 
-# Tipo da sessão do banco, usado só para anotar os parâmetros das rotas.
-from sqlalchemy.orm import Session
+# AsyncSession: a versão assíncrona da sessão com o banco. Aqui ela
+# serve só para anotar o tipo do parâmetro "session" das rotas.
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_zero.database import get_session
 from fastapi_zero.models import User
@@ -32,7 +33,8 @@ from fastapi_zero.security import (
 
 router = APIRouter(prefix='/users', tags=['users'])
 
-Session = Annotated[Session, Depends(get_session)]
+Session = Annotated[AsyncSession, Depends(get_session)]
+# Mesmo atalho do auth.py, agora apontando para a sessão assíncrona.
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
@@ -41,11 +43,12 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 # Rota POST para criar um usuário. status_code=201 (CREATED) é o padrão
 # para "recurso criado com sucesso". response_model=UserPublic garante
 # que a senha nunca seja devolvida na resposta.
-def create_user(user: UserSchemas, session: Session):
+async def create_user(user: UserSchemas, session: Session):
     # session=Depends(get_session): a cada requisição o FastAPI chama
     # get_session() e entrega aqui uma sessão aberta com o banco.
+    # A rota é "async def" porque usa await nas chamadas ao banco.
 
-    db_user = session.scalar(
+    db_user = await session.scalar(
         select(User).where(
             or_(User.username == user.username, User.email == user.email)
         )
@@ -54,6 +57,8 @@ def create_user(user: UserSchemas, session: Session):
     # do Python aqui não funcionaria: o Python decidiria sozinho qual
     # comparação usar antes mesmo de virar SQL.
     # session.scalar() devolve o primeiro resultado encontrado, ou None.
+    # O await faz a rota esperar a resposta do banco sem travar o
+    # servidor para as outras requisições.
 
     if db_user:
         if db_user.username == user.username or db_user.email == user.email:
@@ -74,9 +79,11 @@ def create_user(user: UserSchemas, session: Session):
 
     session.add(db_user)
     # Coloca o objeto na "fila" da sessão (ainda não grava no banco).
-    session.commit()
+    # Repare: add() NÃO tem await, porque só mexe na memória. Só leva
+    # await o que de fato conversa com o banco (commit, refresh...).
+    await session.commit()
     # Confirma a transação: agora sim o INSERT acontece no banco.
-    session.refresh(db_user)
+    await session.refresh(db_user)
     # Relê o registro do banco para preencher os campos que o próprio
     # banco gerou (id, created_at, updated_at).
 
@@ -87,13 +94,13 @@ def create_user(user: UserSchemas, session: Session):
 
 @router.get('/', status_code=HTTPStatus.OK, response_model=UserList)
 # Rota GET que lista todos os usuários cadastrados.
-def read_users(
+async def read_users(
     session: Session,
     current_user: CurrentUser,
     filter_users: Annotated[FilterPage, Query()],
 ):
 
-    users = session.scalars(
+    users = await session.scalars(
         select(User).limit(filter_users.limit).offset(filter_users.offset)
     )
     # session.scalars() (no plural) devolve TODOS os resultados da
@@ -105,7 +112,7 @@ def read_users(
 @router.put('/{user_id}', status_code=HTTPStatus.OK, response_model=UserPublic)
 # Rota PUT para atualizar um usuário existente. "{user_id}" é um
 # parâmetro de caminho (path parameter) capturado da URL.
-def update_user(
+async def update_user(
     user_id: int,
     user: UserSchemas,
     session: Session,
@@ -128,7 +135,7 @@ def update_user(
     session.add(current_user)
 
     try:
-        session.commit()
+        await session.commit()
         # Só o commit pode falhar aqui: é quando o banco de fato checa
         # a constraint UNIQUE de username/email.
     except IntegrityError:
@@ -137,7 +144,7 @@ def update_user(
             status_code=HTTPStatus.CONFLICT,
         )
 
-    session.refresh(current_user)
+    await session.refresh(current_user)
     # Relê do banco para pegar valores atualizados por ele (ex:
     # updated_at, que usa onupdate=func.now() no model).
 
@@ -146,7 +153,7 @@ def update_user(
 
 @router.delete('/{user_id}', status_code=HTTPStatus.OK, response_model=Message)
 # Rota DELETE para remover um usuário pelo id.
-def delete_user(
+async def delete_user(
     user_id: int,
     session: Session,
     current_user: CurrentUser,
@@ -158,9 +165,11 @@ def delete_user(
         )
     # Mesma regra do PUT: só é possível apagar a própria conta.
 
-    session.delete(current_user)
-    session.commit()
+    await session.delete(current_user)
+    await session.commit()
     # delete() marca o registro para remoção; o commit executa o DELETE.
+    # Diferente do add(), na AsyncSession o delete() leva await: ele
+    # pode precisar ir ao banco carregar dados ligados ao registro.
 
     return {'message': 'User deleted'}
     # response_model=Message: devolve só uma confirmação, não os dados
@@ -170,8 +179,8 @@ def delete_user(
 @router.get('/{user_id}', response_model=UserPublic)
 # Rota GET para buscar um único usuário específico pelo id.
 # Repare que ela NÃO pede get_current_user: é uma rota pública.
-def read_specific_user(user_id: int, session: Session):
-    user_db = session.scalar(select(User).where(User.id == user_id))
+async def read_specific_user(user_id: int, session: Session):
+    user_db = await session.scalar(select(User).where(User.id == user_id))
 
     if not user_db:
         raise HTTPException(

@@ -2,15 +2,24 @@
 # models.py) num dicionário comum, facilitando a comparação no assert.
 from dataclasses import asdict
 
+# pytest: usado aqui para a marca @pytest.mark.asyncio.
+import pytest
+
 # select é usado para montar a consulta (query) que busca o usuário no
 # banco.
 from sqlalchemy import select
+
+# AsyncSession: usado só para anotar o tipo da fixture "session".
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Model que será testado diretamente contra o banco.
 from fastapi_zero.models import User
 
 
-def test_create_user(session, mock_db_time):
+@pytest.mark.asyncio
+# Marca o teste como assíncrono: o pytest-asyncio cria um "loop de
+# eventos" e roda o teste nele, permitindo usar await lá dentro.
+async def test_create_user(session: AsyncSession, mock_db_time):
     # "session" e "mock_db_time" são fixtures injetadas automaticamente
     # (definidas em conftest.py).
 
@@ -26,11 +35,14 @@ def test_create_user(session, mock_db_time):
         session.add(new_user)
         # Marca o objeto para ser inserido no banco (ainda não grava
         # de fato).
-        session.commit()
+        await session.commit()
         # Confirma a transação, gravando o usuário no banco de
         # verdade (o banco em memória criado pela fixture "session").
+        # Leva await porque conversa com o banco.
 
-        user = session.scalar(select(User).where(User.username == 'test'))
+        user = await session.scalar(
+            select(User).where(User.username == 'test')
+        )
         # Consulta o banco buscando o usuário pelo username, para
         # conferir que ele foi realmente salvo (e não só ficou no
         # objeto Python original).

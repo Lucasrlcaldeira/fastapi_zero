@@ -15,7 +15,11 @@ Serve como material de apoio para o curso de FastAPI que você está fazendo.
 - Versão mínima do Python exigida (3.13+).
 - **Dependências de produção**:
   - `fastapi[standard]` — o framework da API.
-  - `sqlalchemy` — ORM para conversar com o banco de dados.
+  - `sqlalchemy[asyncio]` — ORM para conversar com o banco de dados. O
+    extra `[asyncio]` instala o que é preciso para usar o SQLAlchemy no
+    modo **assíncrono** (`AsyncSession`, `create_async_engine`).
+  - `aiosqlite` — driver **assíncrono** do SQLite. O driver padrão do
+    Python (`sqlite3`) é síncrono e não funciona com o engine async.
   - `pydantic-settings` — leitura das configurações do `.env`.
   - `alembic` — migrações do banco de dados.
   - `pwdlib[argon2]` — gera e confere **hashes de senha** (algoritmo
@@ -24,8 +28,16 @@ Serve como material de apoio para o curso de FastAPI que você está fazendo.
   - `tzdata` — base de fusos horários (necessária no Windows para o
     `ZoneInfo('UTC')` usado no `security.py`).
 - **Dependências de desenvolvimento**: Ruff (lint/formatação), Pytest
-  (testes), pytest-cov (cobertura de testes), Taskipy (atalhos de comando).
+  (testes), pytest-cov (cobertura de testes), Taskipy (atalhos de comando)
+  e pytest-asyncio (permite escrever testes e fixtures com `async def`).
 - Configurações do Ruff: linha máxima de 79 caracteres, aspas simples.
+- Configurações do Pytest: `asyncio_default_fixture_loop_scope =
+  'function'` faz cada teste ganhar o seu próprio **loop de eventos**
+  (veja a seção ⚡ mais abaixo), assim um teste não interfere no outro.
+- Configuração do coverage: `concurrency = ['thread', 'greenlet']`. O
+  SQLAlchemy async usa *greenlets* por baixo dos panos; sem essa opção, o
+  pytest-cov não "enxerga" algumas linhas executadas e a cobertura sai
+  errada.
 - Atalhos de comando via `task` (Taskipy), por exemplo:
   - `task run` → sobe o servidor de desenvolvimento.
   - `task test` → roda o lint, depois os testes com cobertura, e por fim
@@ -42,12 +54,17 @@ pessoa que instale o projeto tenha exatamente as mesmas versões que você.
 ### `.env`
 Guarda variáveis de ambiente — configurações sensíveis ou que mudam entre
 ambientes (dev, produção, etc.), mantidas fora do código-fonte. Aqui contém
-apenas:
-```
-DATABASE_URL = 'sqlite:///database.db'
-```
-Ou seja, diz ao projeto para usar um banco de dados **SQLite** local,
-guardado no arquivo `database.db`.
+quatro variáveis:
+
+- `DATABASE_URL='sqlite+aiosqlite:///database.db'` — diz ao projeto para
+  usar um banco de dados **SQLite** local, guardado no arquivo
+  `database.db`. O `+aiosqlite` escolhe o **driver assíncrono** — sem
+  ele, o `create_async_engine` dá erro.
+- `SECRET_KEY` — a chave secreta que **assina** os tokens JWT. Quem
+  conhece essa chave consegue criar tokens válidos, por isso ela fica
+  aqui e não no código.
+- `ALGORITHM` — o algoritmo de assinatura do JWT.
+- `ACCESS_TOKEN_EXPIRE_MINUTES` — por quantos minutos o token vale.
 
 ### `.gitignore`
 Lista de arquivos e pastas que o **Git** deve ignorar (não versionar), como
@@ -89,23 +106,46 @@ durante os testes). É consumido para gerar o relatório em `htmlcov/`.
 Esta é a pasta principal do pacote Python da aplicação.
 
 ### `app.py`
-O **coração da API**. Aqui é criada a instância do FastAPI
-(`app = FastAPI()`) e definidas todas as rotas (endpoints):
+O **ponto de partida da API**. Aqui é criada a instância do FastAPI
+(`app = FastAPI()`), que é "plugada" nos routers com
+`app.include_router(auth.router)` e `app.include_router(users.router)`.
+O próprio `app.py` só define a rota raiz (`/`); as outras rotas ficam na
+pasta `routers/`.
 
-| Rota | Método | Precisa de token? | O que faz |
-|---|---|---|---|
-| `/` | GET | Não | Retorna `{"message": "Hello World"}` (rota de teste/saúde) |
-| `/users/` | POST | Não | Cria um novo usuário (cadastro) |
-| `/users/` | GET | **Sim** | Lista os usuários, com paginação (`limit`/`offset`) |
-| `/users/{user_id}` | GET | Não | Busca um usuário específico pelo ID |
-| `/users/{user_id}` | PUT | **Sim** | Atualiza o **próprio** usuário |
-| `/users/{user_id}` | DELETE | **Sim** | Remove o **próprio** usuário |
-| `/token` | POST | Não | Login: recebe e-mail e senha e devolve um token JWT |
+### `routers/` — as rotas, separadas por assunto
+Um **`APIRouter`** é como um "mini-app": agrupa rotas do mesmo assunto
+num arquivo próprio. O `prefix` é colocado na frente de todas as rotas do
+router, e as `tags` agrupam as rotas na documentação (`/docs`).
+
+- `routers/auth.py` — `APIRouter(prefix='/auth')`: a rota de **login**.
+- `routers/users.py` — `APIRouter(prefix='/users')`: o **CRUD de
+  usuários**.
+
+Os dois definem o atalho `Session = Annotated[AsyncSession,
+Depends(get_session)]`, que junta o tipo e a dependência num nome só.
+O `users.py` também tem o `CurrentUser`, que faz o mesmo com o
+`get_current_user`.
+
+Todas as rotas da API:
+
+| Rota | Método | Arquivo | Precisa de token? | O que faz |
+|---|---|---|---|---|
+| `/` | GET | `app.py` | Não | Retorna `{"message": "Hello World"}` (rota de teste/saúde) |
+| `/users/` | POST | `routers/users.py` | Não | Cria um novo usuário (cadastro) |
+| `/users/` | GET | `routers/users.py` | **Sim** | Lista os usuários, com paginação (`limit`/`offset`) |
+| `/users/{user_id}` | GET | `routers/users.py` | Não | Busca um usuário específico pelo ID |
+| `/users/{user_id}` | PUT | `routers/users.py` | **Sim** | Atualiza o **próprio** usuário |
+| `/users/{user_id}` | DELETE | `routers/users.py` | **Sim** | Remove o **próprio** usuário |
+| `/auth/token` | POST | `routers/auth.py` | Não | Login: recebe e-mail e senha e devolve um token JWT |
 
 Pontos importantes:
 
 - Todas as rotas usam o **banco de dados real** através de uma sessão do
   SQLAlchemy, recebida com `Depends(get_session)`.
+- As rotas são **assíncronas** (`async def`) e usam `await` em toda
+  chamada que vai ao banco (`scalar`, `scalars`, `commit`, `refresh`,
+  `delete`). O `session.add()` **não** leva `await`, porque só mexe na
+  memória.
 - As senhas são salvas como **hash** (`get_password_hash`), nunca como
   texto puro.
 - Rotas protegidas pedem `Depends(get_current_user)`. Sem um token válido
@@ -138,16 +178,18 @@ Concentra tudo o que é **segurança**:
 - `verify_password(senha, hash)`: confere se a senha digitada corresponde
   ao hash salvo.
 - `create_access_token(data)`: cria um **token JWT** com os dados
-  recebidos + o campo `exp` (expira em 30 minutos), assinado com a
-  `SECRET_KEY`.
+  recebidos + o campo `exp` (expira depois de
+  `ACCESS_TOKEN_EXPIRE_MINUTES` minutos), assinado com a `SECRET_KEY` e
+  o `ALGORITHM`. Os três valores vêm do `Settings` (ou seja, do `.env`).
 - `oauth2_scheme`: ensina o FastAPI a pegar o token do header
   `Authorization` e faz aparecer o botão **Authorize** no `/docs`.
 - `get_current_user(...)`: **dependência** das rotas protegidas. Decodifica
   o token, lê o e-mail guardado em `sub` e busca o usuário no banco. Se
-  algo falhar, devolve 401.
+  algo falhar, devolve 401. É `async def`, porque a busca no banco usa
+  `await`.
 
 **Como funciona o login, passo a passo:**
-1. O cliente faz `POST /token` com e-mail e senha (form-data).
+1. O cliente faz `POST /auth/token` com e-mail e senha (form-data).
 2. A API confere a senha com `verify_password`.
 3. Se estiver certa, gera um token com `{'sub': email}` e devolve.
 4. Nas próximas requisições, o cliente manda o header
@@ -158,18 +200,45 @@ Concentra tudo o que é **segurança**:
 > pode decodificá-lo (teste em jwt.io). A assinatura só garante que ele
 > **não foi alterado**. Por isso nunca coloque a senha dentro do token.
 
-> ⚠️ **Sobre a `SECRET_KEY`**: por enquanto ela está escrita direto no
-> código (`'your-secret-key'`). Em um projeto real ela deve ir para o
-> `.env` e ser lida pelo `Settings`.
+> ⚠️ **Sobre a `SECRET_KEY`**: ela fica no `.env`, que está no
+> `.gitignore`, então nunca vai para o GitHub. Se alguém descobrir essa
+> chave, consegue criar tokens válidos em nome de qualquer usuário.
 
 ### `database.py`
 Cria a conexão com o banco:
 
 - `engine`: o "motor" de conexão, criado **uma vez** com a
-  `DATABASE_URL` do `.env`.
-- `get_session()`: dependência que abre uma `Session` para cada
-  requisição, entrega para a rota com `yield` e fecha ao final (graças ao
-  `with`). Nos testes, ela é trocada por uma sessão de banco em memória.
+  `DATABASE_URL` do `.env`, usando `create_async_engine` (versão
+  assíncrona).
+- `get_session()`: dependência **assíncrona** (`async def`) que abre uma
+  `AsyncSession` para cada requisição, entrega para a rota com `yield` e
+  fecha ao final (graças ao `async with`). Nos testes, ela é trocada por
+  uma sessão de banco em memória.
+- `expire_on_commit=False`: por padrão, depois do `commit` o SQLAlchemy
+  "esquece" os valores dos objetos e os relê do banco no próximo acesso.
+  No modo async essa releitura escondida não é possível (ela precisaria
+  de um `await`), então esse comportamento é desligado.
+
+### ⚡ Programação assíncrona (`async`/`await`) — resumo
+
+- **Síncrono**: enquanto a rota espera o banco responder, o servidor fica
+  parado esperando junto.
+- **Assíncrono**: enquanto a rota espera (`await`), o servidor fica livre
+  para atender **outras requisições**. Quando a resposta chega, a rota
+  continua de onde parou.
+- `async def` cria uma **corrotina** — uma função que pode ser "pausada"
+  nos `await`.
+- `await` só pode ser usado **dentro** de uma função `async def`. Esquecer
+  o `await` não dá erro na hora: a variável recebe uma corrotina pendente
+  em vez do resultado (ex: `user` não seria um `User`).
+- `async with` é o `with` do mundo assíncrono (abre e fecha recursos com
+  `await` por baixo dos panos).
+- O **loop de eventos** é quem gerencia essas pausas e retomadas. O
+  FastAPI já cuida dele nas rotas; nos testes, quem cuida é o
+  pytest-asyncio; no Alembic, o `asyncio.run()`.
+- `run_sync(funcao)`: executa uma função **síncrona** (como
+  `metadata.create_all` ou as migrações do Alembic) "por dentro" de uma
+  conexão assíncrona — é a ponte entre os dois mundos.
 
 ### `models.py`
 Define o **modelo `User`** usando o SQLAlchemy (ORM — Object-Relational
@@ -205,12 +274,23 @@ validada automaticamente (tipos, formatos, obrigatoriedade):
   (`GET /users/`).
 - `Token`: resposta do login, com `access_token` e `token_type`
   (`"Bearer"`).
+- `FilterPage`: os parâmetros de **paginação** da listagem, lidos da URL
+  (ex: `GET /users/?offset=0&limit=10`). `offset` diz quantos registros
+  pular e `limit` quantos devolver. Os dois têm `Field(ge=0)`, ou seja,
+  não aceitam números negativos (padrões: `offset=0`, `limit=10`).
 
 ### `settings.py`
 Lê as variáveis de ambiente do arquivo `.env` de forma **tipada e
-validada**, usando a biblioteca `pydantic-settings`. Atualmente expõe
-apenas `DATABASE_URL`, usada pelo `database.py` (aplicação) e pelo
-`migrations/env.py` (Alembic) para saber a qual banco se conectar.
+validada**, usando a biblioteca `pydantic-settings`. Expõe:
+
+- `DATABASE_URL`: usada pelo `database.py` (aplicação) e pelo
+  `migrations/env.py` (Alembic) para saber a qual banco se conectar.
+- `SECRET_KEY`, `ALGORITHM` e `ACCESS_TOKEN_EXPIRE_MINUTES`: usadas pelo
+  `security.py` para criar e validar os tokens JWT.
+
+Se alguma dessas variáveis faltar no `.env`, a aplicação **nem sobe**.
+Isso é proposital: é melhor falhar logo do que rodar com uma
+configuração errada.
 
 ### `__init__.py`
 Arquivo vazio. Sua única função é marcar a pasta `fastapi_zero` como um
@@ -228,6 +308,17 @@ que versionar**. Ele:
 2. Aponta o "metadata" dos models (`table_registry.metadata`) como fonte
    da verdade, permitindo que o Alembic **gere migrações automaticamente**
    ao comparar os models com o estado atual do banco.
+3. Conecta ao banco de forma **assíncrona**, já que a URL usa o driver
+   `aiosqlite`. Como o Alembic em si só roda migrações de forma síncrona,
+   o arquivo é dividido em três partes:
+   - `do_run_migrations(connection)`: parte **síncrona**, que aplica as
+     migrações numa conexão já aberta.
+   - `run_async_migrations()`: parte **assíncrona**, que cria o engine
+     com `async_engine_from_config`, abre a conexão e chama
+     `connection.run_sync(do_run_migrations)`.
+   - `run_migrations_online()`: usa `asyncio.run(...)` para rodar a parte
+     assíncrona (funções async não rodam sozinhas, precisam de um loop de
+     eventos).
 
 ### `script.py.mako`
 Um **template** (modelo) usado pelo Alembic para gerar novos arquivos de
@@ -269,17 +360,21 @@ reutilizáveis pelos testes (o Pytest as injeta automaticamente quando o
 teste pede o nome como parâmetro). Uma fixture pode depender de outra:
 
 - `session`: cria um banco de dados SQLite **temporário, em memória**
-  (`sqlite:///:memory:`) para cada teste — rápido e isolado. Cria as
-  tabelas antes do teste rodar e as apaga depois. Usa `StaticPool` para
-  que todas as conexões enxerguem o mesmo banco em memória.
+  (`sqlite+aiosqlite:///:memory:`) para cada teste — rápido e isolado.
+  Cria as tabelas antes do teste rodar e as apaga depois (com
+  `conn.run_sync(...)`, porque `create_all`/`drop_all` são síncronos).
+  Usa `StaticPool` para que todas as conexões enxerguem o mesmo banco em
+  memória. É uma fixture **assíncrona**, por isso usa o decorador
+  `@pytest_asyncio.fixture` em vez do `@pytest.fixture` comum.
 - `client`: um cliente HTTP de teste (`TestClient`) que simula requisições
   à API **sem subir um servidor real**. Usa
   `app.dependency_overrides` para trocar o `get_session` da aplicação pela
   sessão em memória — assim os testes **nunca tocam no `database.db`**.
 - `user`: cria um usuário já salvo no banco de teste (com a senha em
   hash) e guarda a senha original em `user.clean_password`, para os
-  testes conseguirem fazer login.
-- `token`: faz login com o `user` na rota `/token` e devolve o token JWT,
+  testes conseguirem fazer login. Também é assíncrona
+  (`@pytest_asyncio.fixture`), porque salva no banco com `await`.
+- `token`: faz login com o `user` na rota `/auth/token` e devolve o token JWT,
   pronto para ser usado nas rotas protegidas.
 - `mock_db_time`: um truque (usando eventos do SQLAlchemy) para "congelar"
   `created_at` e `updated_at` numa data fixa durante os testes, evitando
@@ -315,7 +410,13 @@ formulário e confere se volta um `access_token` do tipo `Bearer`.
 Testa o **modelo `User`** diretamente no banco de dados (sem passar pela
 API): cria um usuário, salva na sessão do banco e confere se os dados
 batem, usando a fixture `mock_db_time` para fixar `created_at` e
-`updated_at` e tornar o teste previsível.
+`updated_at` e tornar o teste previsível. Como usa a sessão assíncrona
+direto, o teste é `async def` e leva a marca `@pytest.mark.asyncio`, que
+pede ao pytest-asyncio para rodá-lo num loop de eventos.
+
+> 💡 Os outros testes (`test_users.py`, `test_auth.py`...) continuam
+> síncronos: eles usam o `TestClient`, que cuida da parte assíncrona da
+> API sozinho.
 
 ### `test_security.py`
 Testa a parte de **segurança**:
@@ -355,6 +456,8 @@ que implementa um **CRUD de usuários** (Create, Read, Update, Delete) com
 
 O que já está pronto:
 - ✅ Rotas conectadas ao **banco de dados real** (SQLite via SQLAlchemy).
+- ✅ Aplicação **assíncrona** (`async`/`await`) de ponta a ponta: rotas,
+  sessão do banco, testes e migrações.
 - ✅ Estrutura do banco versionada com **migrações do Alembic**.
 - ✅ Senhas guardadas com **hash (Argon2)**.
 - ✅ **Login** com token JWT e rotas **protegidas**.
@@ -363,8 +466,6 @@ O que já está pronto:
 
 Pontos que ainda podem evoluir (alguns aparecem nas próximas aulas do
 curso):
-- Mover a `SECRET_KEY`, o `ALGORITHM` e o tempo de expiração do token para
-  o `.env`/`Settings`.
 - Tratar o **token expirado**: hoje só o `DecodeError` é capturado, então
   um token vencido (`ExpiredSignatureError`) causaria erro 500 em vez de
   401.

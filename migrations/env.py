@@ -1,6 +1,12 @@
+# asyncio: módulo do Python que roda código assíncrono (async/await).
+import asyncio
+
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
+# async_engine_from_config: cria um engine ASSÍNCRONO a partir das
+# configurações do alembic.ini (o antigo engine_from_config era o
+# síncrono, que não funciona com o driver aiosqlite).
+from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
@@ -53,26 +59,37 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+def do_run_migrations(connection):
+    # Parte SÍNCRONA: o Alembic só sabe rodar migrações de forma
+    # síncrona. Recebe uma conexão pronta e aplica as migrações.
+    context.configure(
+        connection=connection, target_metadata=target_metadata,
+    )
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
+    with context.begin_transaction():
+        context.run_migrations()
 
-    """
-    connectable = engine_from_config(
+
+async def run_async_migrations() -> None:
+    # Parte ASSÍNCRONA: abre a conexão com o banco usando o engine
+    # assíncrono e "empresta" essa conexão para a parte síncrona.
+    connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+        # run_sync: executa a função síncrona do_run_migrations
+        # dentro da conexão assíncrona (a "ponte" entre os dois
+        # mundos).
 
-        with context.begin_transaction():
-            context.run_migrations()
+
+def run_migrations_online() -> None:
+    # Funções async não rodam sozinhas: asyncio.run() cria o loop de
+    # eventos, executa a corrotina até o fim e depois o encerra.
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():
