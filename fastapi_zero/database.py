@@ -12,7 +12,11 @@ engine = create_async_engine(Settings().DATABASE_URL)
 # padrão (sqlite3) é síncrono e não funciona com create_async_engine.
 
 
-async def get_session():
+async def get_session():  # pragma: no cover
+    # "pragma: no cover" tira esta função do relatório de cobertura: nos
+    # testes ela é substituída pela sessão do banco de teste (conftest),
+    # então nunca roda e apareceria como linha não testada.
+
     # Dependência usada pelas rotas com Depends(get_session).
     # Virou "async def" porque abrir e fechar uma sessão assíncrona
     # exige await, e await só pode ser usado dentro de função async.

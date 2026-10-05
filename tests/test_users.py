@@ -64,29 +64,20 @@ def test_update_users(client, user, token):
     # A resposta deve refletir os dados novos.
 
 
-def test_update_integrity_error(client, user, token):
-    client.post(
-        '/users/',
-        headers={'Authorization': f'Bearer {token}'},
-        json={
-            'username': 'fausto',
-            'email': 'fausto@example.com',
-            'password': 'secret',
-        },
-    )
-    # Primeiro cadastra um SEGUNDO usuário, chamado "fausto".
-
+def test_update_integrity_error(client, user, other_user, token):
     response = client.put(
         f'/users/{user.id}',
         headers={'Authorization': f'Bearer {token}'},
         json={
-            'username': 'fausto',
+            'username': other_user.username,
             'email': 'bob@example.com',
             'password': 'mynewpassword',
         },
     )
-    # Depois o usuário logado tenta trocar o próprio username para
-    # "fausto", que já pertence a outra pessoa.
+    # O usuário logado tenta trocar o PRÓPRIO username para o de
+    # other_user, que já pertence a outra pessoa. A URL precisa ser a
+    # do próprio usuário (user.id): se fosse other_user.id, a rota
+    # barraria antes com 403 (sem permissão) e nem chegaria no banco.
 
     assert response.status_code == HTTPStatus.CONFLICT
     assert response.json() == {'detail': 'Username or Email already exists'}
@@ -191,3 +182,33 @@ def test_duplicate_create_user(client, user):
     assert response.status_code == HTTPStatus.CONFLICT
     assert response.json() == {'detail': 'username/email already exist'}
     # 409 (CONFLICT), com a mesma mensagem definida na rota POST.
+
+
+def test_update_user_with_wrong_user(client, other_user, token):
+    response = client.put(
+        f'/users/{other_user.id}',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'username': 'bob',
+            'email': 'bob@example.com',
+            'password': 'mynewpassword',
+        },
+    )
+    # O token é do "user", mas a URL aponta para o other_user: ou seja,
+    # alguém logado tentando alterar a conta de outra pessoa.
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json() == {'detail': 'Not enough permissions'}
+    # A rota só permite alterar o próprio usuário, então devolve 403.
+
+
+def test_delete_user_with_wrong_user(client, other_user, token):
+    response = client.delete(
+        f'/users/{other_user.id}',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    # Mesmo caso do teste acima, mas tentando APAGAR a conta do outro.
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json() == {'detail': 'Not enough permissions'}
+    # Só dá para apagar a própria conta: 403.

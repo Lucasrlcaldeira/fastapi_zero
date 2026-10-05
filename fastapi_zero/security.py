@@ -13,7 +13,9 @@ from fastapi.security import OAuth2PasswordBearer
 
 # encode: cria (assina) um token JWT. decode: lê e valida um token.
 # DecodeError: erro lançado quando o token é inválido ou foi adulterado.
-from jwt import DecodeError, decode, encode
+# ExpiredSignatureError: erro lançado quando o token já passou do
+# horário de expiração ("exp").
+from jwt import DecodeError, ExpiredSignatureError, decode, encode
 
 # PasswordHash: biblioteca que gera e confere hashes de senha.
 from pwdlib import PasswordHash
@@ -113,6 +115,11 @@ async def get_current_user(
     except DecodeError:
         raise credentials_exception
         # Token malformado ou com assinatura inválida.
+
+    except ExpiredSignatureError:
+        raise credentials_exception
+        # Token válido, mas vencido (o decode confere o "exp" sozinho).
+        # Não é filho de DecodeError, por isso precisa do próprio except.
 
     user = await session.scalar(
         select(User).where(User.email == subject_email)

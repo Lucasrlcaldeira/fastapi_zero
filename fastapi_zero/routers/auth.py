@@ -19,6 +19,7 @@ from fastapi_zero.schemas import (
 )
 from fastapi_zero.security import (
     create_access_token,
+    get_current_user,
     verify_password,
 )
 
@@ -74,3 +75,19 @@ async def login_for_access_token(
     return {'access_token': access_token, 'token_type': 'Bearer'}
     # "Bearer" = "portador": quem tiver o token em mãos é tratado como
     # o usuário dono dele. Por isso o token nunca deve ser compartilhado.
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+# Atalho para "o usuário logado": a rota que recebe CurrentUser exige um
+# token válido no header, e o FastAPI entrega o User dono desse token.
+
+
+@router.post('/refresh_token', response_model=Token)
+async def refresh_access_token(user: CurrentUser):
+    # Renova o token: quem ainda tem um token válido troca por um novo,
+    # com prazo de expiração renovado, sem digitar a senha de novo.
+    # Se o token já expirou, o get_current_user devolve 401 antes de
+    # chegar aqui (por isso não dá para renovar token vencido).
+    new_access_token = create_access_token(data={'sub': user.email})
+
+    return {'access_token': new_access_token, 'token_type': 'bearer'}

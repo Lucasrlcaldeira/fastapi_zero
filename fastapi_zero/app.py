@@ -27,7 +27,9 @@ app.include_router(users.router)
 @app.get('/', status_code=HTTPStatus.OK, response_model=Message)
 # Registra uma rota GET na raiz ("/"). status_code=200 é o padrão de
 # sucesso. response_model=Message valida/formata o que a função retorna.
-def read_root():
+async def read_root():
+    # Virou "async def" como as outras rotas. Ela não usa await, mas o
+    # FastAPI aceita rotas síncronas e assíncronas do mesmo jeito.
     return {'message': 'Hello World'}
     # Retorna um dicionário simples; o FastAPI converte para JSON
     # automaticamente.

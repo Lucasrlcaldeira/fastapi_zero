@@ -5,6 +5,10 @@ from contextlib import contextmanager
 # Tipo usado para representar a data fixa simulada nos testes.
 from datetime import datetime
 
+# factory_boy: gera objetos de teste (aqui, Users) com dados
+# automáticos, sem precisar escrever username/email na mão.
+import factory
+
 # Framework de testes usado no projeto.
 import pytest
 
@@ -150,11 +154,34 @@ async def user(session: AsyncSession):
     # Cria um usuário já salvo no banco de teste, para os testes que
     # precisam de alguém cadastrado (ex: login, update, delete).
     password = 'testtest'
-    user = User(
-        username='Teste',
-        email='test@test.com',
-        password=get_password_hash(password),
-    )
+
+    user = UserFactory(password=get_password_hash(password))
+
+    # A senha é salva como hash, igual à rota de criação faz.
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    # commit grava no banco; refresh relê o registro para preencher
+    # o id e as datas. Os dois vão ao banco, por isso levam await.
+
+    user.clean_password = password
+    # "Pendura" a senha original (texto puro) no objeto. Ela não é
+    # coluna do banco, só um atributo extra para os testes conseguirem
+    # fazer login, já que o hash não pode ser revertido.
+    return user
+
+
+@pytest_asyncio.fixture
+# Também é async, porque salva o usuário no banco com await.
+async def other_user(session: AsyncSession):
+    # Cria um SEGUNDO usuário, diferente do "user". Serve para testar o
+    # que acontece quando o usuário logado mexe em dados de outra
+    # pessoa (403) ou tenta usar um username/e-mail que já é dela (409).
+    # Como os dois usam a UserFactory, cada um ganha um username único.
+    password = 'testtest'
+
+    user = UserFactory(password=get_password_hash(password))
+
     # A senha é salva como hash, igual à rota de criação faz.
     session.add(user)
     await session.commit()
@@ -183,3 +210,24 @@ def token(client, user):
 @pytest.fixture
 def settings():
     return Settings()
+    # Dá aos testes acesso às configurações (SECRET_KEY, ALGORITHM...),
+    # as mesmas lidas do .env pela aplicação.
+
+
+class UserFactory(factory.Factory):
+    # "Fábrica" de Users para os testes: cada chamada a UserFactory()
+    # devolve um User novo (ainda não salvo no banco) com dados prontos.
+    class Meta:
+        model = User
+        # Diz à factory qual classe ela deve instanciar.
+
+    username = factory.sequence(lambda n: f'test{n}')
+    # sequence: cada usuário criado recebe um número diferente
+    # (test0, test1, test2...), então nunca há username repetido.
+    email = factory.lazy_attribute(lambda obj: f'{obj.username}@test.com')
+    # lazy_attribute: calculado na hora, a partir dos outros campos.
+    # Assim o e-mail acompanha o username (test1 -> test1@test.com).
+    password = factory.lazy_attribute(
+        lambda obj: f'{obj.username}&1ha412asrf5'
+    )
+    # Senha padrão; as fixtures sobrescrevem com o hash de 'testtest'.
