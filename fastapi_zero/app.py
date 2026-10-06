@@ -8,7 +8,7 @@ from http import HTTPStatus
 # rota (ex: uma sessão do banco ou o usuário logado).
 from fastapi import FastAPI
 
-from fastapi_zero.routers import auth, users
+from fastapi_zero.routers import auth, todos, users
 
 # Importa os "moldes" (schemas Pydantic) que validam os dados que entram
 # e saem da API.
@@ -22,6 +22,7 @@ app = FastAPI()
 
 app.include_router(auth.router)
 app.include_router(users.router)
+app.include_router(todos.router)
 
 
 @app.get('/', status_code=HTTPStatus.OK, response_model=Message)

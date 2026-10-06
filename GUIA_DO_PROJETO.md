@@ -108,7 +108,8 @@ Esta é a pasta principal do pacote Python da aplicação.
 ### `app.py`
 O **ponto de partida da API**. Aqui é criada a instância do FastAPI
 (`app = FastAPI()`), que é "plugada" nos routers com
-`app.include_router(auth.router)` e `app.include_router(users.router)`.
+`app.include_router(auth.router)`, `app.include_router(users.router)` e
+`app.include_router(todos.router)`.
 O próprio `app.py` só define a rota raiz (`/`); as outras rotas ficam na
 pasta `routers/`.
 
@@ -117,14 +118,17 @@ Um **`APIRouter`** é como um "mini-app": agrupa rotas do mesmo assunto
 num arquivo próprio. O `prefix` é colocado na frente de todas as rotas do
 router, e as `tags` agrupam as rotas na documentação (`/docs`).
 
-- `routers/auth.py` — `APIRouter(prefix='/auth')`: a rota de **login**.
+- `routers/auth.py` — `APIRouter(prefix='/auth')`: **login** e
+  **renovação do token**.
 - `routers/users.py` — `APIRouter(prefix='/users')`: o **CRUD de
   usuários**.
+- `routers/todos.py` — `APIRouter(prefix='/todos')`: o **CRUD de
+  tarefas** (lista de afazeres). Todas as rotas exigem token, e cada
+  usuário só enxerga e mexe nas **próprias** tarefas.
 
-Os dois definem o atalho `Session = Annotated[AsyncSession,
-Depends(get_session)]`, que junta o tipo e a dependência num nome só.
-O `users.py` também tem o `CurrentUser`, que faz o mesmo com o
-`get_current_user`.
+Os arquivos definem o atalho `Session = Annotated[AsyncSession,
+Depends(get_session)]`, que junta o tipo e a dependência num nome só, e
+o `CurrentUser`, que faz o mesmo com o `get_current_user`.
 
 Todas as rotas da API:
 
@@ -137,6 +141,11 @@ Todas as rotas da API:
 | `/users/{user_id}` | PUT | `routers/users.py` | **Sim** | Atualiza o **próprio** usuário |
 | `/users/{user_id}` | DELETE | `routers/users.py` | **Sim** | Remove o **próprio** usuário |
 | `/auth/token` | POST | `routers/auth.py` | Não | Login: recebe e-mail e senha e devolve um token JWT |
+| `/auth/refresh_token` | POST | `routers/auth.py` | **Sim** | Troca um token ainda válido por um novo, com prazo renovado |
+| `/todos/` | POST | `routers/todos.py` | **Sim** | Cria uma tarefa para o usuário logado |
+| `/todos/` | GET | `routers/todos.py` | **Sim** | Lista as tarefas do usuário logado, com filtros e paginação |
+| `/todos/{todo_id}` | PATCH | `routers/todos.py` | **Sim** | Altera só os campos enviados de uma tarefa |
+| `/todos/{todo_id}` | DELETE | `routers/todos.py` | **Sim** | Apaga uma tarefa |
 
 Pontos importantes:
 
@@ -157,6 +166,41 @@ Pontos importantes:
   devolve **409 (Conflict)**.
 - No login, o campo do formulário se chama `username` (é o padrão do
   OAuth2), mas o valor esperado é o **e-mail**.
+- Nas tarefas, quem tenta apagar ou alterar uma tarefa de **outra
+  pessoa** recebe **404**, como se ela não existisse. A busca sempre
+  exige as duas coisas: `Todo.id == todo_id` **e**
+  `Todo.user_id == user.id`.
+
+#### 📝 Como funciona a listagem de tarefas (`GET /todos/`)
+
+Os filtros chegam pela URL e viram um `FilterTodo` (graças ao
+`Query()`). Ex: `GET /todos/?title=mercado&limit=5`.
+
+1. A rota começa com uma consulta base, que ainda **não foi ao banco**:
+   `select(Todo).where(Todo.user_id == user.id)`.
+2. Cada `if` acrescenta um filtro **só se** ele foi enviado (quando não
+   vem na URL, o valor é `None` e o `if` é pulado).
+3. `.contains(texto)` vira `LIKE '%texto%'` no SQL: acha o texto em
+   qualquer parte do campo.
+4. `.filter()` devolve uma **query nova**, por isso o
+   `query = query.filter(...)`.
+5. No fim, `limit`/`offset` fazem a paginação e o `await
+   session.scalars(...)` finalmente executa a consulta.
+
+| URL | SQL gerado (resumido) |
+|---|---|
+| `/todos/` | `WHERE user_id = 1` |
+| `/todos/?title=mercado` | `WHERE user_id = 1 AND title LIKE '%mercado%'` |
+| `/todos/?title=mercado&state=done` | `... AND title LIKE '%mercado%' AND state LIKE '%done%'` |
+
+#### ✏️ PUT × PATCH
+
+- **PUT** (em `users.py`) substitui o registro **inteiro**: todos os
+  campos precisam ser enviados.
+- **PATCH** (em `todos.py`) muda **só os campos enviados**. O truque é
+  `todo.model_dump(exclude_unset=True)`, que monta um dicionário só com
+  o que o cliente mandou, e o `setattr`, que aplica cada campo no
+  objeto do banco.
 
 #### Códigos HTTP usados no projeto
 
@@ -166,7 +210,8 @@ Pontos importantes:
 | 201 | Created | Usuário criado |
 | 401 | Unauthorized | Token ausente/inválido ou senha errada — "não sei quem você é" |
 | 403 | Forbidden | Logado, mas sem permissão — "sei quem você é, mas não pode" |
-| 404 | Not Found | Usuário não encontrado |
+| 404 | Not Found | Usuário ou tarefa não encontrados (ou tarefa de outra pessoa) |
+| 422 | Unprocessable Entity | Dados inválidos (ex: filtro `title` curto ou longo demais, `state` que não existe) |
 | 409 | Conflict | Username ou e-mail já cadastrado |
 
 ### `security.py`
@@ -185,7 +230,8 @@ Concentra tudo o que é **segurança**:
   `Authorization` e faz aparecer o botão **Authorize** no `/docs`.
 - `get_current_user(...)`: **dependência** das rotas protegidas. Decodifica
   o token, lê o e-mail guardado em `sub` e busca o usuário no banco. Se
-  algo falhar, devolve 401. É `async def`, porque a busca no banco usa
+  algo falhar (token malformado, **vencido** ou de usuário que não existe
+  mais), devolve 401. É `async def`, porque a busca no banco usa
   `await`.
 
 **Como funciona o login, passo a passo:**
@@ -195,6 +241,9 @@ Concentra tudo o que é **segurança**:
 4. Nas próximas requisições, o cliente manda o header
    `Authorization: Bearer <token>`.
 5. `get_current_user` valida o token e entrega o usuário para a rota.
+6. Antes de o token vencer, o cliente pode chamar
+   `POST /auth/refresh_token` para ganhar um token novo sem digitar a
+   senha de novo. Token já vencido não pode ser renovado (dá 401).
 
 > ⚠️ **Sobre o JWT**: o conteúdo do token **não é secreto** — qualquer um
 > pode decodificá-lo (teste em jwt.io). A assinatura só garante que ele
@@ -241,9 +290,9 @@ Cria a conexão com o banco:
   conexão assíncrona — é a ponte entre os dois mundos.
 
 ### `models.py`
-Define o **modelo `User`** usando o SQLAlchemy (ORM — Object-Relational
-Mapper, que mapeia classes Python para tabelas do banco de dados). A tabela
-`users` tem as colunas:
+Define os **modelos `User` e `Todo`** usando o SQLAlchemy (ORM —
+Object-Relational Mapper, que mapeia classes Python para tabelas do banco
+de dados). A tabela `users` tem as colunas:
 
 - `id`: chave primária, gerada automaticamente.
 - `username`: texto único (não pode repetir).
@@ -253,6 +302,22 @@ Mapper, que mapeia classes Python para tabelas do banco de dados). A tabela
   próprio banco (`server_default=func.now()`).
 - `updated_at`: data/hora da última alteração. Preenchida na criação e
   atualizada a cada `UPDATE` (`onupdate=func.now()`).
+- `todos`: **não é coluna**. É um `relationship`, um "atalho" para a
+  lista de tarefas do usuário (`user.todos`). Com
+  `cascade='all, delete-orphan'`, apagar o usuário apaga as tarefas dele.
+
+A tabela `todos` tem as colunas:
+
+- `id`: chave primária.
+- `title` e `description`: textos da tarefa.
+- `state`: o estado da tarefa. Só aceita os valores do `TodoState`
+  (`draft`, `todo`, `doing`, `done`, `trash`), um `Enum` que herda de
+  `str` para virar texto simples no JSON e no banco.
+- `created_at` e `updated_at`: as mesmas datas automáticas do `User`
+  (criação e última alteração), preenchidas pelo banco.
+- `user_id`: **chave estrangeira** (`ForeignKey('users.id')`). Guarda o
+  id do dono da tarefa e liga as duas tabelas: um usuário tem **várias**
+  tarefas, e cada tarefa tem **um** dono (relação 1 para N).
 
 Usa o estilo moderno do SQLAlchemy 2.0, com `Mapped` (tipagem) e
 `mapped_as_dataclass` (transforma a classe num dataclass Python, o que
@@ -278,6 +343,18 @@ validada automaticamente (tipos, formatos, obrigatoriedade):
   (ex: `GET /users/?offset=0&limit=10`). `offset` diz quantos registros
   pular e `limit` quantos devolver. Os dois têm `Field(ge=0)`, ou seja,
   não aceitam números negativos (padrões: `offset=0`, `limit=10`).
+- `FilterTodo`: os filtros da listagem de tarefas. **Herda** de
+  `FilterPage` (ganha `offset` e `limit`) e acrescenta `title`,
+  `description` e `state`, todos opcionais (`None` = "não filtrar por
+  isso"). O `title` exige pelo menos 3 letras (`min_length=3`).
+- `TodoSchema`: o que o cliente envia para **criar** uma tarefa. Se o
+  `state` não vier, começa como `todo`.
+- `TodoPublic`: o que a API **devolve**: o `TodoSchema` + o `id`, o
+  `created_at` e o `updated_at` (as datas vão no JSON como texto ISO,
+  ex: `"2026-09-18T00:00:00"`).
+- `TodoList`: resposta da listagem, `{"todos": [...]}`.
+- `TodoUpdate`: o corpo do **PATCH**, com todos os campos opcionais,
+  porque o cliente manda só o que quer mudar.
 
 ### `settings.py`
 Lê as variáveis de ambiente do arquivo `.env` de forma **tipada e
@@ -335,6 +412,17 @@ corrente:
 | 1 | `2ba89507e184_create_users_table.py` | Cria a tabela `users` (id, username, email, password, created_at) |
 | 2 | `eebc2e224646_add_updated_at_to_users.py` | Adiciona a coluna `updated_at` |
 | 3 | `ced0fbd8d4db_exercicio_02_aula_04.py` | Migração **vazia** (`pass`) — foi gerada no exercício, mas não havia mudança a aplicar |
+| 4 | `99d8f5d0f16c_create_todos_table.py` | Cria a tabela `todos` (id, title, description, state, user_id), com a chave estrangeira para `users` |
+| 5 | `a99cdc5af920_add_created_at_and_updated_at_to_todos.py` | Adiciona `created_at` e `updated_at` em `todos`, usando o **modo batch** (veja abaixo) |
+
+> ⚠️ **SQLite e o modo batch**: o SQLite não deixa adicionar uma coluna
+> numa tabela existente quando o valor padrão é "não constante", como
+> `CURRENT_TIMESTAMP` (dá o erro *Cannot add a column with non-constant
+> default*). A solução é o `with op.batch_alter_table('todos') as
+> batch_op:`: o Alembic cria uma tabela nova já com as colunas, copia os
+> dados, apaga a antiga e renomeia a nova. Se o `--autogenerate` gerar um
+> `op.add_column` desse tipo, troque para o modo batch antes do
+> `alembic upgrade head`.
 
 Toda migração tem duas funções:
 - `upgrade()`: aplica a mudança (`alembic upgrade head`).
@@ -374,11 +462,15 @@ teste pede o nome como parâmetro). Uma fixture pode depender de outra:
   hash) e guarda a senha original em `user.clean_password`, para os
   testes conseguirem fazer login. Também é assíncrona
   (`@pytest_asyncio.fixture`), porque salva no banco com `await`.
+- `other_user`: um **segundo** usuário, igual ao `user`. Serve para testar
+  o que acontece quando alguém mexe em dados de outra pessoa (ex: 403 nos
+  usuários, 404 nas tarefas).
 - `token`: faz login com o `user` na rota `/auth/token` e devolve o token JWT,
   pronto para ser usado nas rotas protegidas.
 - `mock_db_time`: um truque (usando eventos do SQLAlchemy) para "congelar"
   `created_at` e `updated_at` numa data fixa durante os testes, evitando
-  que falhem por causa da hora exata em que rodaram.
+  que falhem por causa da hora exata em que rodaram. Recebe o model a
+  "vigiar": `mock_db_time(model=User)` ou `mock_db_time(model=Todo)`.
 
 Encadeamento das fixtures:
 ```
@@ -403,8 +495,34 @@ Testa as **rotas de usuários** (`routers/users.py`):
   `test_exercicio_not_ok` confere o 404 quando o id não existe.
 
 ### `test_auth.py`
-Testa o **login** (`POST /auth/token`): envia e-mail e senha como
-formulário e confere se volta um `access_token` do tipo `Bearer`.
+Testa o **login** e a **renovação do token**:
+- `test_get_token`: login com e-mail e senha (formulário) devolve um
+  `access_token` do tipo `Bearer`.
+- `test_token_wrong_password` e `test_token_inexistent_user`: senha
+  errada e e-mail não cadastrado.
+- `test_token_expired_after_time`: um token vencido passa a dar 401.
+- `test_refresh_token`: um token válido é trocado por um novo.
+- `test_token_expired_dont_refresh`: token vencido **não** pode ser
+  renovado.
+
+### `test_todos.py`
+Testa as **rotas de tarefas** (`routers/todos.py`). Usa a
+**`TodoFactory`** (biblioteca `factory_boy`), uma "fábrica" que cria
+tarefas com dados inventados: `TodoFactory.create_batch(5, ...)` cria 5
+de uma vez, e dá para fixar campos (`title='Test todo 1'`).
+- Criação de tarefa (`POST /todos/`), usando o `mock_db_time(model=Todo)`
+  para congelar as datas e conseguir comparar o JSON inteiro.
+- `test_create_todo_error`: grava direto no banco um `state='test'`, que
+  não existe no `TodoState`. O SQLite aceita, mas na **leitura** o
+  SQLAlchemy lança `LookupError`, e o `pytest.raises` confere isso.
+- Exercícios da aula 06: filtro `title` com 1 letra (`min_length`) e com
+  22 letras (`max_length`) devem dar **422**.
+- Listagem: sem filtros, com paginação (`?offset=1&limit=2`) e com cada
+  filtro (`title`, `description`, `state`). O teste de descrição busca
+  só `desc` e acha `description`, mostrando o "contém" do `.contains()`.
+- `DELETE`: apagar a própria tarefa, 404 para id inexistente e 404 ao
+  tentar apagar a tarefa do `other_user`.
+- `PATCH`: 404 para id inexistente e alteração só do título.
 
 ### `test_db.py`
 Testa o **modelo `User`** diretamente no banco de dados (sem passar pela
@@ -414,9 +532,11 @@ batem, usando a fixture `mock_db_time` para fixar `created_at` e
 direto, o teste é `async def` e leva a marca `@pytest.mark.asyncio`, que
 pede ao pytest-asyncio para rodá-lo num loop de eventos.
 
-> 💡 Os outros testes (`test_users.py`, `test_auth.py`...) continuam
-> síncronos: eles usam o `TestClient`, que cuida da parte assíncrona da
-> API sozinho.
+> 💡 Testes que só usam o `TestClient` podem ser síncronos: ele cuida da
+> parte assíncrona da API sozinho. Já os testes que salvam algo direto no
+> banco antes de chamar a API (como vários de `test_todos.py`) precisam
+> ser `async def` com `@pytest.mark.asyncio`, por causa do
+> `await session.commit()`.
 
 ### `test_security.py`
 Testa a parte de **segurança**:
@@ -451,8 +571,8 @@ nem editadas manualmente — normalmente ficam no `.gitignore`:
 ## 🧭 Resumo geral do projeto
 
 É uma API FastAPI de estudo (curso **"FastAPI do Zero"**, do Dunossauro)
-que implementa um **CRUD de usuários** (Create, Read, Update, Delete) com
-**autenticação por JWT**.
+que implementa um **CRUD de usuários** e um **CRUD de tarefas** (Create,
+Read, Update, Delete) com **autenticação por JWT**.
 
 O que já está pronto:
 - ✅ Rotas conectadas ao **banco de dados real** (SQLite via SQLAlchemy).
@@ -460,15 +580,14 @@ O que já está pronto:
   sessão do banco, testes e migrações.
 - ✅ Estrutura do banco versionada com **migrações do Alembic**.
 - ✅ Senhas guardadas com **hash (Argon2)**.
-- ✅ **Login** com token JWT e rotas **protegidas**.
+- ✅ **Login** com token JWT, rotas **protegidas**, token que **expira**
+  e **renovação** do token.
 - ✅ Regra de **autorização**: cada usuário só altera/apaga a si mesmo.
+- ✅ **Lista de tarefas** por usuário, com filtros, paginação e PATCH.
 - ✅ **Testes automatizados** isolados, usando banco em memória.
 
 Pontos que ainda podem evoluir (alguns aparecem nas próximas aulas do
 curso):
-- Tratar o **token expirado**: hoje só o `DecodeError` é capturado, então
-  um token vencido (`ExpiredSignatureError`) causaria erro 500 em vez de
-  401.
 - No login, usar 401 também quando o e-mail não existe (hoje é 404), para
   não revelar quais e-mails estão cadastrados.
 - Escrever o `README.md` (o que o projeto faz, como instalar, como rodar e

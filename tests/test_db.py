@@ -54,6 +54,9 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'password': 'secret',
         'created_at': time,
         'updated_at': time,
+        'todos': [],
     }
     # Confere se todos os campos do usuário salvo batem com o
     # esperado, incluindo a data fixa simulada por mock_db_time.
+    # "todos" vem do relationship em models.py: um usuário recém-criado
+    # ainda não tem tarefas, então a lista é vazia.
