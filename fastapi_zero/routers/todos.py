@@ -100,10 +100,13 @@ async def list_todos(
     # "description", porque "desc" está contido no texto.
 
     if todo_filter.state:
-        query = query.filter(Todo.state.contains(todo_filter.state))
-    # Mesma ideia para o estado (draft, todo, doing...).
+        query = query.filter(Todo.state == todo_filter.state)
+    # Para o estado, a comparação é EXATA (==), e não "contém": a tarefa
+    # é "draft" ou não é. Além disso, no PostgreSQL a coluna state é do
+    # tipo Enum, e o LIKE do .contains() só funciona com texto (dá o
+    # erro "operator does not exist: todostate ~~ text").
     # Os filtros vão se EMPILHANDO: com ?title=a&state=done, o SQL fica
-    # WHERE user_id = 1 AND title LIKE '%a%' AND state LIKE '%done%'.
+    # WHERE user_id = 1 AND title LIKE '%a%' AND state = 'done'.
 
     todos = await session.scalars(
         query.limit(todo_filter.limit).offset(todo_filter.offset)

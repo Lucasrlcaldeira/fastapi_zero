@@ -29,10 +29,10 @@ from sqlalchemy import event
 # create_async_engine: cria a conexão com o banco no modo assíncrono.
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-# StaticPool: faz todas as conexões reaproveitarem a MESMA conexão.
-# Necessário com SQLite em memória: cada conexão nova teria um banco
-# vazio diferente, e o teste "perderia" as tabelas criadas.
-from sqlalchemy.pool import StaticPool
+# testcontainers: sobe um container Docker DESCARTÁVEL (aqui, um
+# PostgreSQL) só para os testes, e o apaga no final. Assim os testes
+# usam o mesmo banco da aplicação, sem tocar nos dados de verdade.
+from testcontainers.postgres import PostgresContainer
 
 # Importa a aplicação FastAPI já configurada, para testá-la.
 from fastapi_zero.app import app
@@ -59,8 +59,8 @@ def client(session):
     # depender de outra, e o pytest resolve a ordem sozinho.
     def get_session_override():
         return session
-        # Devolve a sessão do banco EM MEMÓRIA do teste, em vez da
-        # sessão do banco real (database.db).
+        # Devolve a sessão do banco DE TESTE (o Postgres descartável do
+        # testcontainers), em vez da sessão do banco real (app_db).
 
     with TestClient(app) as client:
         app.dependency_overrides[get_session] = get_session_override
@@ -73,22 +73,26 @@ def client(session):
     # Desfaz a troca depois do teste, para não afetar outros testes.
 
 
+@pytest.fixture(scope='session')
+# scope='session': esta fixture roda UMA vez só, para a execução
+# inteira do pytest (não tem nada a ver com a AsyncSession do
+# SQLAlchemy). Subir um container leva segundos; se fosse por teste,
+# cada um esperaria o Postgres ligar de novo.
+def engine():
+    with PostgresContainer('postgres:18.6', driver='psycopg') as postgres:
+        # Liga um Postgres 18.6 descartável no Docker (o Docker Desktop
+        # precisa estar aberto). Ao sair do "with", ele é apagado.
+        # driver='psycopg': monta a URL de conexão com o driver psycopg.
+        yield create_async_engine(postgres.get_connection_url())
+        # Entrega aos testes um engine apontando para esse container.
+
+
 @pytest_asyncio.fixture
 # Fixture assíncrona usa o decorador do pytest_asyncio: o
 # @pytest.fixture comum não sabe "esperar" (await) uma função async.
-async def session():
-    # Banco SQLite na memória RAM: rápido e some ao final,
-    # então cada teste começa com um banco limpo.
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        connect_args={'check_same_thread': False},
-        poolclass=StaticPool,
-    )
-    # Cria uma "engine" (motor de conexão) para um banco SQLite que
-    # existe só na memória RAM, nunca é salvo em disco.
-    # "sqlite+aiosqlite" usa o driver assíncrono aiosqlite, o mesmo
-    # tipo de driver usado pela aplicação de verdade.
-
+async def session(engine):
+    # Pede o "engine" acima: o container é o mesmo para todos os testes,
+    # mas cada teste ganha tabelas novinhas (create_all/drop_all).
     async with engine.begin() as conn:
         await conn.run_sync(table_registry.metadata.create_all)
     # Cria no banco todas as tabelas definidas nos models, antes do
@@ -107,8 +111,8 @@ async def session():
 
     async with engine.begin() as conn:
         await conn.run_sync(table_registry.metadata.drop_all)
-    # Limpeza: apaga as tabelas depois do teste, garantindo que o
-    # próximo comece do zero (isolamento entre testes).
+        # Limpeza: apaga as tabelas depois do teste, garantindo que o
+        # próximo comece do zero (isolamento entre testes).
 
 
 @contextmanager

@@ -18,8 +18,10 @@ Serve como material de apoio para o curso de FastAPI que você está fazendo.
   - `sqlalchemy[asyncio]` — ORM para conversar com o banco de dados. O
     extra `[asyncio]` instala o que é preciso para usar o SQLAlchemy no
     modo **assíncrono** (`AsyncSession`, `create_async_engine`).
-  - `aiosqlite` — driver **assíncrono** do SQLite. O driver padrão do
-    Python (`sqlite3`) é síncrono e não funciona com o engine async.
+  - `psycopg[binary]` — driver do **PostgreSQL**, o banco que a aplicação
+    usa agora. Funciona nos modos síncrono e assíncrono. O extra
+    `[binary]` instala uma versão já compilada, sem precisar de nada
+    extra no Windows.
   - `pydantic-settings` — leitura das configurações do `.env`.
   - `alembic` — migrações do banco de dados.
   - `pwdlib[argon2]` — gera e confere **hashes de senha** (algoritmo
@@ -28,8 +30,14 @@ Serve como material de apoio para o curso de FastAPI que você está fazendo.
   - `tzdata` — base de fusos horários (necessária no Windows para o
     `ZoneInfo('UTC')` usado no `security.py`).
 - **Dependências de desenvolvimento**: Ruff (lint/formatação), Pytest
-  (testes), pytest-cov (cobertura de testes), Taskipy (atalhos de comando)
-  e pytest-asyncio (permite escrever testes e fixtures com `async def`).
+  (testes), pytest-cov (cobertura de testes), Taskipy (atalhos de
+  comando), pytest-asyncio (permite escrever testes e fixtures com
+  `async def`), factory-boy (gera objetos de teste), freezegun ("congela"
+  o relógio nos testes de expiração do token) e **testcontainers** (sobe
+  um PostgreSQL descartável no Docker só para os testes).
+
+> 💡 O `aiosqlite` (driver async do SQLite) foi removido: com os testes
+> usando PostgreSQL também, nada mais no projeto usa SQLite.
 - Configurações do Ruff: linha máxima de 79 caracteres, aspas simples.
 - Configurações do Pytest: `asyncio_default_fixture_loop_scope =
   'function'` faz cada teste ganhar o seu próprio **loop de eventos**
@@ -56,10 +64,23 @@ Guarda variáveis de ambiente — configurações sensíveis ou que mudam entre
 ambientes (dev, produção, etc.), mantidas fora do código-fonte. Aqui contém
 quatro variáveis:
 
-- `DATABASE_URL='sqlite+aiosqlite:///database.db'` — diz ao projeto para
-  usar um banco de dados **SQLite** local, guardado no arquivo
-  `database.db`. O `+aiosqlite` escolhe o **driver assíncrono** — sem
-  ele, o `create_async_engine` dá erro.
+- `DATABASE_URL="postgresql+psycopg://app_user:<senha>@localhost:5432/app_db"`
+  — diz ao projeto para usar o **PostgreSQL** que roda no container
+  Docker `app_database`. Lendo a URL por partes:
+  - `postgresql+psycopg` → o banco (PostgreSQL) e o driver (psycopg);
+  - `app_user:<senha>` → usuário e senha (os do `POSTGRES_USER` e
+    `POSTGRES_PASSWORD` do `docker run`);
+  - `localhost:5432` → onde o banco está: na própria máquina, na porta
+    5432 (a do `-p 5432:5432`);
+  - `app_db` → o nome do banco (o `POSTGRES_DB`).
+
+  Antes, a URL era `sqlite+aiosqlite:///database.db` (SQLite num arquivo
+  local). Como todo o resto do código usa o SQLAlchemy, trocar de banco
+  foi só trocar essa linha e rodar as migrações no banco novo.
+
+  Essa URL vale para quando a API roda **no Windows** (`task run`). No
+  `docker compose`, o `compose.yaml` **sobrescreve** a `DATABASE_URL`
+  trocando `localhost` por `fastzero_database` (veja a seção 🐳 abaixo).
 - `SECRET_KEY` — a chave secreta que **assina** os tokens JWT. Quem
   conhece essa chave consegue criar tokens válidos, por isso ela fica
   aqui e não no código.
@@ -86,9 +107,136 @@ real do banco é sobrescrita dinamicamente pelo código Python em
 `migrations/env.py` (que lê do `.env`).
 
 ### `database.db`
-O arquivo físico do banco de dados SQLite. É criado/atualizado quando as
-migrações rodam ou a aplicação salva dados. É um **artefato gerado**, não
-faz parte do código-fonte que você escreve.
+O arquivo físico do banco de dados **SQLite**, usado antes da troca para o
+PostgreSQL. Desde então, a aplicação não usa mais este arquivo: ele só
+guarda os dados antigos. É um **artefato gerado**, não faz parte do
+código-fonte que você escreve.
+
+### 🐳 Docker — o básico
+O **Docker** empacota a aplicação junto com tudo de que ela precisa
+(Linux, Python, bibliotecas) numa "caixa" que roda igual em qualquer
+computador. Três conceitos:
+
+- **Dockerfile** → a **receita**.
+- **Imagem** → o "bolo pronto", gerado pela receita com `docker build`.
+  É só um pacote fechado, não roda sozinho.
+- **Container** → a imagem **rodando** (`docker run`). Dá para criar
+  vários containers da mesma imagem.
+
+### `Dockerfile`
+A receita da imagem **da API**: parte de uma imagem com Python 3.13,
+copia o projeto para `/app`, instala as dependências com o Poetry (sem as
+de desenvolvimento) e, ao ligar, roda o `uvicorn` na porta 8000. Cada
+linha está comentada no próprio arquivo.
+
+```
+docker build -t fastapi_zero .
+docker run -it --name fastzeroapp -p 8000:8000 fastapi_zero
+```
+
+- `-t fastapi_zero` → o nome da imagem (o `run` procura por ele).
+- `.` → o **contexto de build**: a pasta com o Dockerfile e os arquivos
+  que o `COPY` vai copiar. Sem ele, dá *requires 1 argument*.
+- `docker run` sem ter feito o `build` antes dá *pull access denied*: o
+  Docker não acha a imagem e tenta baixá-la do Docker Hub, onde ela não
+  existe.
+- `--host 0.0.0.0` (no `CMD`) é obrigatório: com o padrão `127.0.0.1`,
+  a API só responderia de dentro do próprio container.
+
+> ⚠️ Rodando só com `docker run`, a API usa a `DATABASE_URL` do `.env`
+> (o `COPY . .` leva o `.env` junto), e lá o banco está em `localhost`.
+> Dentro do container, `localhost` é o **próprio container**, onde não
+> tem Postgres: as rotas que usam o banco falham. É isso que o
+> `compose.yaml` resolve.
+
+### `compose.yaml`
+Descreve **dois containers que trabalham juntos**, e um único comando
+sobe tudo:
+
+- `fastzero_database` → o PostgreSQL (imagem oficial `postgres`), com os
+  dados guardados no **volume** `pgdata` (sobrevive mesmo se o container
+  for apagado).
+- `fastzero_app` → a API, construída a partir do `Dockerfile`
+  (`build: .`). Usa o `entrypoint.sh` para ligar e só sobe depois do
+  banco (`depends_on`).
+
+O compose cria uma **rede interna** onde cada serviço é encontrado pelo
+**nome**. Por isso a `DATABASE_URL` da API aponta para
+`@fastzero_database:5432`, e não para `localhost`.
+
+Comandos:
+- `docker compose up --build` → **reconstrói** a imagem da API e sobe
+  tudo. Use quando mudou o código ou as dependências: o `COPY . .` tira
+  uma "foto" dos arquivos na hora do build, então a imagem antiga não
+  enxerga as mudanças.
+- `docker compose up` → sobe com a imagem que já existe (mais rápido).
+- `docker compose down` → desliga e remove os containers (o volume, com
+  os dados, continua lá).
+- `docker compose up fastzero_database` → sobe **só o banco**.
+
+> 💡 **No dia a dia**, rebuildar a cada alteração é lento. O fluxo mais
+> prático é subir só o banco (`docker compose up fastzero_database`) e
+> rodar a API no Windows com `task run`, que reinicia sozinho a cada
+> arquivo salvo. O `up --build` completo fica para testar a aplicação
+> empacotada, do jeito que rodaria num servidor.
+
+> ⚠️ `depends_on` espera o banco **ligar**, não ficar **pronto**. Se a
+> API subir antes de o Postgres aceitar conexões, o `alembic upgrade
+> head` do entrypoint falha. Nesse caso, é só rodar de novo.
+
+### `entrypoint.sh`
+O script que o compose roda ao ligar o container da API:
+1. `alembic upgrade head` → cria/atualiza as tabelas no banco do
+   compose;
+2. `uvicorn ...` → sobe o servidor.
+
+> ⚠️ **Quebra de linha**: este arquivo precisa estar em **LF** (padrão
+> do Linux), não **CRLF** (padrão do Windows). Com CRLF, o container
+> falha com *no such file or directory*. O Git deste projeto está
+> configurado para converter LF → CRLF (aparece o aviso *LF will be
+> replaced by CRLF*). Um arquivo `.gitattributes` com a linha
+> `*.sh text eol=lf` evita esse problema ao clonar o projeto.
+
+> 💡 Ainda não existe um `.dockerignore`. Sem ele, o `COPY . .` leva
+> para a imagem coisas desnecessárias (`.env`, `database.db`,
+> `htmlcov/`, caches). Ele funciona como o `.gitignore`, mas para o
+> Docker.
+
+### 🐳 PostgreSQL no Docker (container avulso)
+Antes do `compose.yaml`, o PostgreSQL rodava num **container** avulso,
+criado uma única vez com:
+
+```
+docker run -e POSTGRES_USER=app_user -e POSTGRES_DB=app_db -e POSTGRES_PASSWORD=app_password --name app_database -p 5432:5432 postgres
+```
+
+- `-e NOME=valor` → variáveis de ambiente que a imagem `postgres` usa
+  para criar o usuário, a senha e o banco na primeira vez.
+- `--name app_database` → o nome do container, usado nos outros comandos.
+- `-p 5432:5432` → liga a porta 5432 do seu PC à porta 5432 do container
+  (`porta_do_pc:porta_do_container`).
+- `postgres` → a imagem (o "molde" do container) baixada do Docker Hub.
+
+Comandos do dia a dia:
+- `docker start app_database` → liga o banco de novo. O `docker run` é
+  só para **criar**: rodar de novo dá erro de nome repetido.
+- `docker stop app_database` → desliga.
+- `docker ps` → mostra o que está rodando (`docker ps -a` mostra também
+  os parados).
+
+> ⚠️ **Armadilhas no Windows:**
+> - O **Docker Desktop precisa estar aberto**. Se não estiver, aparece
+>   *failed to connect to the docker API*.
+> - No PowerShell, **não use `\`** para quebrar comandos em várias linhas
+>   (isso é do Linux/Mac, e dá *invalid reference format*). Escreva tudo
+>   numa linha ou use a crase `` ` ``.
+> - Só um programa pode usar a porta 5432 por vez. O `app_database`, o
+>   banco do compose e os Postgres de outros projetos usam todos a 5432:
+>   ligue um de cada vez (`docker stop <nome>` no que estiver ligado).
+> - A imagem `postgres` **sem tag** é a "latest" e muda de versão
+>   principal sozinha quando sai uma nova (ex: 18 → 19). Um banco criado
+>   numa versão não abre na seguinte. Fixar a tag (`postgres:18`) evita
+>   a surpresa.
 
 ### `README.md`
 Está vazio no momento — ainda não há documentação escrita sobre o projeto.
@@ -181,7 +329,11 @@ Os filtros chegam pela URL e viram um `FilterTodo` (graças ao
 2. Cada `if` acrescenta um filtro **só se** ele foi enviado (quando não
    vem na URL, o valor é `None` e o `if` é pulado).
 3. `.contains(texto)` vira `LIKE '%texto%'` no SQL: acha o texto em
-   qualquer parte do campo.
+   qualquer parte do campo. É usado no `title` e na `description`. O
+   `state` usa comparação **exata** (`==`): a tarefa é `draft` ou não
+   é. Além disso, no PostgreSQL a coluna `state` é um **Enum**, e o
+   `LIKE` só funciona com texto (daria *operator does not exist:
+   todostate ~~ text*).
 4. `.filter()` devolve uma **query nova**, por isso o
    `query = query.filter(...)`.
 5. No fim, `limit`/`offset` fazem a paginação e o `await
@@ -191,7 +343,7 @@ Os filtros chegam pela URL e viram um `FilterTodo` (graças ao
 |---|---|
 | `/todos/` | `WHERE user_id = 1` |
 | `/todos/?title=mercado` | `WHERE user_id = 1 AND title LIKE '%mercado%'` |
-| `/todos/?title=mercado&state=done` | `... AND title LIKE '%mercado%' AND state LIKE '%done%'` |
+| `/todos/?title=mercado&state=done` | `... AND title LIKE '%mercado%' AND state = 'done'` |
 
 #### ✏️ PUT × PATCH
 
@@ -262,7 +414,7 @@ Cria a conexão com o banco:
 - `get_session()`: dependência **assíncrona** (`async def`) que abre uma
   `AsyncSession` para cada requisição, entrega para a rota com `yield` e
   fecha ao final (graças ao `async with`). Nos testes, ela é trocada por
-  uma sessão de banco em memória.
+  uma sessão do Postgres descartável do testcontainers.
 - `expire_on_commit=False`: por padrão, depois do `commit` o SQLAlchemy
   "esquece" os valores dos objetos e os relê do banco no próximo acesso.
   No modo async essa releitura escondida não é possível (ela precisaria
@@ -385,8 +537,8 @@ que versionar**. Ele:
 2. Aponta o "metadata" dos models (`table_registry.metadata`) como fonte
    da verdade, permitindo que o Alembic **gere migrações automaticamente**
    ao comparar os models com o estado atual do banco.
-3. Conecta ao banco de forma **assíncrona**, já que a URL usa o driver
-   `aiosqlite`. Como o Alembic em si só roda migrações de forma síncrona,
+3. Conecta ao banco de forma **assíncrona**, já que a aplicação usa um
+   driver assíncrono (`psycopg` hoje, `aiosqlite` antes). Como o Alembic em si só roda migrações de forma síncrona,
    o arquivo é dividido em três partes:
    - `do_run_migrations(connection)`: parte **síncrona**, que aplica as
      migrações numa conexão já aberta.
@@ -396,6 +548,19 @@ que versionar**. Ele:
    - `run_migrations_online()`: usa `asyncio.run(...)` para rodar a parte
      assíncrona (funções async não rodam sozinhas, precisam de um loop de
      eventos).
+
+> ⚠️ **Windows + psycopg**: no Windows, o loop de eventos padrão do Python
+> é o `ProactorEventLoop`, que o psycopg **não aceita** no modo async (dá
+> o erro *Psycopg cannot use the 'ProactorEventLoop'*). Por isso, no
+> Windows (`sys.platform == 'win32'`), o `env.py` chama
+> `asyncio.run(..., loop_factory=asyncio.SelectorEventLoop)`, que cria um
+> loop compatível. Esse problema não existia com o SQLite, porque o
+> driver `aiosqlite` funciona com qualquer loop.
+>
+> O `app.py` tem uma correção parecida, para a API:
+> `asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())`.
+> As duas são necessárias, porque o Alembic **não importa** o `app.py`:
+> ele roda só o `env.py`.
 
 ### `script.py.mako`
 Um **template** (modelo) usado pelo Alembic para gerar novos arquivos de
@@ -447,17 +612,24 @@ Define as **fixtures** do Pytest — funções que preparam dados/objetos
 reutilizáveis pelos testes (o Pytest as injeta automaticamente quando o
 teste pede o nome como parâmetro). Uma fixture pode depender de outra:
 
-- `session`: cria um banco de dados SQLite **temporário, em memória**
-  (`sqlite+aiosqlite:///:memory:`) para cada teste — rápido e isolado.
-  Cria as tabelas antes do teste rodar e as apaga depois (com
-  `conn.run_sync(...)`, porque `create_all`/`drop_all` são síncronos).
-  Usa `StaticPool` para que todas as conexões enxerguem o mesmo banco em
-  memória. É uma fixture **assíncrona**, por isso usa o decorador
-  `@pytest_asyncio.fixture` em vez do `@pytest.fixture` comum.
+- `engine`: usa o **testcontainers** para ligar um **PostgreSQL 18.6
+  descartável** no Docker e devolve um engine conectado nele. Ao fim dos
+  testes, o container é apagado. Assim os testes usam o **mesmo tipo de
+  banco** da aplicação (antes era SQLite em memória, que se comporta
+  diferente: veja o `test_create_todo_error`). Tem
+  `scope='session'`: roda **uma vez só** para a execução inteira do
+  pytest (não confunda com a `AsyncSession` do SQLAlchemy).
+- `session`: pede o `engine`, cria as tabelas antes de cada teste e as
+  apaga depois (com `conn.run_sync(...)`, porque
+  `create_all`/`drop_all` são síncronos). O container é o mesmo para
+  todos, mas cada teste começa com tabelas vazias (isolamento). É uma
+  fixture **assíncrona**, por isso usa `@pytest_asyncio.fixture` em vez
+  do `@pytest.fixture` comum.
 - `client`: um cliente HTTP de teste (`TestClient`) que simula requisições
   à API **sem subir um servidor real**. Usa
   `app.dependency_overrides` para trocar o `get_session` da aplicação pela
-  sessão em memória — assim os testes **nunca tocam no `database.db`**.
+  sessão de teste, assim os testes **nunca tocam no banco real**
+  (`app_db`).
 - `user`: cria um usuário já salvo no banco de teste (com a senha em
   hash) e guarda a senha original em `user.clean_password`, para os
   testes conseguirem fazer login. Também é assíncrona
@@ -474,9 +646,25 @@ teste pede o nome como parâmetro). Uma fixture pode depender de outra:
 
 Encadeamento das fixtures:
 ```
-session ──► client ──► token
-   └──────► user ─────────┘
+engine ──► session ──► client ──► token
+              └──────► user ─────────┘
 ```
+
+> ⚠️ **Por que o escopo do `engine` importa**: ligar um container de
+> Postgres leva alguns segundos. Quando o container era criado dentro da
+> `session` (escopo padrão, `function`), **cada teste** esperava um
+> Postgres novo ligar, e a suíte levava minutos. Com o `engine` em
+> `scope='session'`, essa espera acontece uma vez só.
+
+> ⚠️ **O Docker Desktop precisa estar aberto** para rodar os testes: o
+> testcontainers usa o Docker para criar o banco de teste. Os containers
+> `app_database` e o do compose podem ficar desligados; os testes não
+> usam nenhum dos dois.
+
+> 💡 O `task test` roda o `task lint` antes (`pre_test`). Se o Ruff
+> achar um erro, os testes nem começam. Exemplo: duas fixtures com o
+> mesmo nome dão *Redefinition of unused `session`* (regra F811), porque
+> a segunda substitui a primeira e a primeira vira código morto.
 
 ### `test_app.py`
 Testa a **rota raiz** (`/`) definida em `app.py`, que devolve
@@ -512,14 +700,17 @@ tarefas com dados inventados: `TodoFactory.create_batch(5, ...)` cria 5
 de uma vez, e dá para fixar campos (`title='Test todo 1'`).
 - Criação de tarefa (`POST /todos/`), usando o `mock_db_time(model=Todo)`
   para congelar as datas e conseguir comparar o JSON inteiro.
-- `test_create_todo_error`: grava direto no banco um `state='test'`, que
-  não existe no `TodoState`. O SQLite aceita, mas na **leitura** o
-  SQLAlchemy lança `LookupError`, e o `pytest.raises` confere isso.
+- `test_create_todo_error`: tenta gravar direto no banco um
+  `state='test'`, que não existe no `TodoState`. No PostgreSQL a coluna
+  é um Enum de verdade, então o banco recusa já no `commit` com
+  `DataError`, e o `pytest.raises` confere isso. (No SQLite, o valor era
+  gravado e o erro só aparecia na leitura, como `LookupError`.)
 - Exercícios da aula 06: filtro `title` com 1 letra (`min_length`) e com
   22 letras (`max_length`) devem dar **422**.
 - Listagem: sem filtros, com paginação (`?offset=1&limit=2`) e com cada
   filtro (`title`, `description`, `state`). O teste de descrição busca
   só `desc` e acha `description`, mostrando o "contém" do `.contains()`.
+  O de `state` usa o valor exato (`?state=draft`).
 - `DELETE`: apagar a própria tarefa, 404 para id inexistente e 404 ao
   tentar apagar a tarefa do `other_user`.
 - `PATCH`: 404 para id inexistente e alteração só do título.
@@ -575,7 +766,11 @@ que implementa um **CRUD de usuários** e um **CRUD de tarefas** (Create,
 Read, Update, Delete) com **autenticação por JWT**.
 
 O que já está pronto:
-- ✅ Rotas conectadas ao **banco de dados real** (SQLite via SQLAlchemy).
+- ✅ Rotas conectadas ao **banco de dados real** (PostgreSQL no Docker,
+  via SQLAlchemy). Os testes também usam PostgreSQL, num container
+  descartável do testcontainers.
+- ✅ Aplicação **conteinerizada**: `Dockerfile` + `compose.yaml` sobem a
+  API e o banco juntos, com as migrações aplicadas automaticamente.
 - ✅ Aplicação **assíncrona** (`async`/`await`) de ponta a ponta: rotas,
   sessão do banco, testes e migrações.
 - ✅ Estrutura do banco versionada com **migrações do Alembic**.
@@ -584,11 +779,14 @@ O que já está pronto:
   e **renovação** do token.
 - ✅ Regra de **autorização**: cada usuário só altera/apaga a si mesmo.
 - ✅ **Lista de tarefas** por usuário, com filtros, paginação e PATCH.
-- ✅ **Testes automatizados** isolados, usando banco em memória.
+- ✅ **Testes automatizados** isolados, com tabelas recriadas a cada
+  teste.
 
 Pontos que ainda podem evoluir (alguns aparecem nas próximas aulas do
 curso):
 - No login, usar 401 também quando o e-mail não existe (hoje é 404), para
   não revelar quais e-mails estão cadastrados.
+- Criar um `.dockerignore` e um `.gitattributes` (`*.sh text eol=lf`),
+  e fixar a versão da imagem `postgres` no `compose.yaml`.
 - Escrever o `README.md` (o que o projeto faz, como instalar, como rodar e
   testar) — importante para o portfólio no GitHub.

@@ -5,8 +5,9 @@ from http import HTTPStatus
 import factory.fuzzy
 import pytest
 
-# select: monta consultas ao banco (usado no test_create_todo_error).
-from sqlalchemy import select
+# DataError: erro que o SQLAlchemy lança quando o banco recusa um valor
+# (usado no test_create_todo_error).
+from sqlalchemy.exc import DataError
 
 from fastapi_zero.models import Todo, TodoState, User
 
@@ -245,16 +246,18 @@ async def test_create_todo_error(session, user: User):
     )
     # 'test' não é draft, todo, doing, done nem trash. Pela API isso
     # nunca passaria (o Pydantic daria 422), mas aqui não tem Pydantic:
-    # o model aceita o texto e o SQLite grava sem reclamar.
+    # o model aceita o texto, e quem decide é o banco.
 
     session.add(todo)
-    await session.commit()
+    # add só coloca na fila (memória); quem fala com o banco é o commit.
 
-    with pytest.raises(LookupError):
-        await session.scalar(select(Todo))
-    # O problema aparece na LEITURA: ao transformar 'test' de volta em
-    # TodoState, o SQLAlchemy não encontra esse valor no Enum e lança
-    # LookupError ("valor não encontrado").
+    with pytest.raises(DataError):
+        await session.commit()
+    # No PostgreSQL, a coluna state é um Enum DE VERDADE (o tipo
+    # "todostate"), então o próprio banco recusa o valor já na GRAVAÇÃO
+    # (no commit), com o erro "invalid input value for enum todostate".
+    # (No SQLite era diferente: ele gravava sem reclamar e o erro só
+    # aparecia na leitura, como LookupError.)
     # pytest.raises confere que o erro ACONTECE: se o bloco "with"
     # rodar sem erro, o teste é que falha.
 

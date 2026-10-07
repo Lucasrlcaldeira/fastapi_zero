@@ -1,6 +1,10 @@
 # asyncio: módulo do Python que roda código assíncrono (async/await).
 import asyncio
 
+# sys.platform diz em qual sistema operacional o código está rodando
+# ('win32' no Windows).
+import sys
+
 from logging.config import fileConfig
 
 # async_engine_from_config: cria um engine ASSÍNCRONO a partir das
@@ -89,7 +93,16 @@ async def run_async_migrations() -> None:
 def run_migrations_online() -> None:
     # Funções async não rodam sozinhas: asyncio.run() cria o loop de
     # eventos, executa a corrotina até o fim e depois o encerra.
-    asyncio.run(run_async_migrations())
+    if sys.platform == 'win32':
+        asyncio.run(
+            run_async_migrations(), loop_factory=asyncio.SelectorEventLoop
+        )
+        # No Windows, o loop de eventos padrão é o ProactorEventLoop, que
+        # o psycopg (driver do PostgreSQL) não aceita no modo async.
+        # loop_factory diz ao asyncio.run qual loop criar: aqui, o
+        # SelectorEventLoop, que é compatível com o psycopg.
+    else:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

@@ -1,3 +1,10 @@
+# asyncio: módulo do Python que roda código assíncrono (async/await).
+import asyncio
+
+# sys.platform diz em qual sistema operacional o código está rodando
+# ('win32' no Windows).
+import sys
+
 # HTTPStatus traz os códigos HTTP com nomes legíveis (OK, CREATED,
 # NOT_FOUND...) em vez de números "mágicos" como 200, 201, 404.
 from http import HTTPStatus
@@ -15,6 +22,15 @@ from fastapi_zero.routers import auth, todos, users
 from fastapi_zero.schemas import (
     Message,
 )
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# No Windows, o loop de eventos padrão (ProactorEventLoop) não funciona
+# com o psycopg no modo async. Esta "política" faz o asyncio criar o
+# SelectorEventLoop, que é compatível.
+# Atenção: isso só vale para quem IMPORTA o app.py (a API). O Alembic
+# não importa este arquivo, por isso o migrations/env.py tem a sua
+# própria correção.
 
 app = FastAPI()
 # Cria a instância principal da aplicação. É ela que "escuta" as rotas

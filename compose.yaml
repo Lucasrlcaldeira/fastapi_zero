@@ -1,0 +1,52 @@
+# compose.yaml: descreve VÁRIOS containers que trabalham juntos (aqui,
+# o banco e a API). Em vez de vários "docker run" compridos, um único
+# "docker compose up" sobe tudo, já ligado entre si.
+
+services:
+# Cada item de "services" vira um container. O nome do serviço também
+# funciona como "endereço" na rede interna que o compose cria.
+  fastzero_database:
+    image: postgres
+    # Imagem oficial do PostgreSQL, baixada do Docker Hub. Sem tag,
+    # vale a "latest" (hoje, a versão 18).
+    volumes:
+      - pgdata:/var/lib/postgresql/
+    # Guarda os dados do banco no volume "pgdata" (declarado no fim do
+    # arquivo). Sem isso, apagar o container apagaria os dados junto.
+    environment:
+      POSTGRES_USER: app_user
+      POSTGRES_DB: app_db
+      POSTGRES_PASSWORD: app_password
+    # Os mesmos "-e" do docker run: criam o usuário, o banco e a senha
+    # na primeira vez que o banco sobe.
+    ports:
+      - "5432:5432"
+    # porta_do_pc:porta_do_container. Deixa o banco acessível também
+    # pelo Windows (ex: "task run" e "alembic" fora do Docker).
+
+  fastzero_app:
+    image: fastzero_app
+    # Nome dado à imagem da API quando ela for construída.
+    build: .
+    # Constrói a imagem a partir do Dockerfile desta pasta (igual ao
+    # "docker build ."). Com "up --build", ela é refeita.
+    entrypoint: ./entrypoint.sh
+    # Ao ligar, roda o entrypoint.sh (migrações + servidor) no lugar do
+    # CMD do Dockerfile.
+    ports:
+      - "8000:8000"
+    # Liga a porta 8000 do PC à da API: http://localhost:8000/docs.
+    depends_on:
+      - fastzero_database
+    # Só liga a API depois de LIGAR o banco. Atenção: "ligado" não é
+    # "pronto para conexões"; o Postgres leva alguns segundos.
+    environment:
+      DATABASE_URL: postgresql+psycopg://app_user:app_password@fastzero_database:5432/app_db
+    # Sobrescreve a DATABASE_URL do .env. Dentro do container,
+    # "localhost" seria o próprio container da API; por isso o endereço
+    # do banco é o NOME DO SERVIÇO (fastzero_database).
+
+volumes:
+  pgdata:
+# Declara o volume "pgdata": um armazenamento gerenciado pelo Docker,
+# que sobrevive mesmo se os containers forem apagados.
