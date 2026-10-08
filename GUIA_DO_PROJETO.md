@@ -238,9 +238,137 @@ Comandos do dia a dia:
 >   numa versão não abre na seguinte. Fixar a tag (`postgres:18`) evita
 >   a surpresa.
 
+### 🔄 Integração Contínua (CI) — o básico
+
+**CI** (*Continuous Integration*) é a prática de verificar o código
+**automaticamente** toda vez que ele é enviado ao repositório. Em vez de
+confiar que todo mundo lembrou de rodar os testes antes do `git push`, um
+servidor faz isso sempre, numa máquina limpa. Se algo quebrar, o GitHub
+mostra um ❌ no commit/pull request; se tudo passar, um ✅.
+
+No projeto, quem faz isso é o **GitHub Actions**, o serviço de CI do
+próprio GitHub. Ele procura arquivos `.yml` dentro de `.github/workflows/`
+e executa cada um deles como um **workflow** (fluxo de trabalho).
+
+Vocabulário:
+- **workflow** → o arquivo `.yml` inteiro (aqui, o `pipeline.yml`).
+- **job** → um conjunto de passos que roda numa mesma máquina virtual.
+- **step** (passo) → uma ação pronta (`uses:`) ou um comando de
+  terminal (`run:`).
+- **secret** → valor sigiloso cadastrado no GitHub, que não aparece no
+  código nem nos logs.
+
+### `.github/workflows/pipeline.yml`
+O workflow de CI do projeto. A cada `push` ou pull request, o GitHub cria
+uma máquina Ubuntu nova e executa, em ordem:
+
+| # | Passo | O que faz |
+|---|-------|-----------|
+| 1 | `actions/checkout@v4` | Baixa o código do repositório para a máquina |
+| 2 | `actions/setup-python@v5` | Instala o Python `3.13.14` |
+| 3 | `pipx install poetry` | Instala o Poetry |
+| 4 | `poetry install` | Instala as dependências do `poetry.lock` |
+| 5 | `poetry run task format` | `ruff check --fix` + `ruff format` |
+| 6 | `poetry run task lint` | `ruff check` (falha se houver erro) |
+| 7 | `poetry run task test` | lint de novo + Pytest com cobertura |
+
+Como a máquina já vem com **Docker**, os testes conseguem subir o
+PostgreSQL descartável do testcontainers, igualzinho ao que acontece no
+seu computador.
+
+**Variáveis de ambiente (`env:`)**: o `Settings` exige `DATABASE_URL`,
+`SECRET_KEY`, `ALGORITHM` e `ACCESS_TOKEN_EXPIRE_MINUTES`, mas o `.env`
+**não vai para o GitHub** (está no `.gitignore`). A solução é cadastrar
+cada uma como *secret* no repositório (**Settings → Secrets and variables
+→ Actions → New repository secret**) e ler no workflow com
+`${{ secrets.NOME }}`. Sem elas, os testes quebram já na importação, com
+um erro de validação do Pydantic dizendo que o campo está faltando.
+
+> 💡 O passo de **format** no CI **corrige** os arquivos (na máquina
+> virtual, que é jogada fora depois) em vez de reclamar. Ou seja, código
+> mal formatado **não** deixa o pipeline vermelho. Para o CI realmente
+> barrar código sem formatação, o comando teria de ser
+> `ruff format --check` (que só verifica). Já o passo de **lint** falha de
+> verdade se o `ruff check` encontrar problemas — e o `task test` roda o
+> lint mais uma vez por causa do `pre_test`.
+
+> ⚠️ Arquivos `.yml` são sensíveis à **indentação** (espaços, nunca
+> tab). Um espaço a mais ou a menos muda o significado ou invalida o
+> arquivo, e o GitHub mostra o erro na aba **Actions**.
+
+### 🌐 Deploy — a API publicada na internet (Render + Supabase)
+
+A API está no ar em **https://fastapi-zero-dh8f.onrender.com/docs**.
+Para isso, o projeto usa dois serviços, cada um com um papel:
+
+| Serviço | Papel | No projeto, substitui... |
+|---------|-------|--------------------------|
+| **Render** (PaaS) | Roda a **API**: baixa o código do GitHub, faz o `docker build` e liga o container 24h, com um endereço público e HTTPS | o container `fastzero_app` do `compose.yaml` |
+| **Supabase** | Hospeda o **banco PostgreSQL** | o container `fastzero_database` do `compose.yaml` |
+
+Ou seja: é o mesmo `compose.yaml` de sempre, só que cada container
+foi morar num serviço diferente da nuvem. O caminho de uma requisição:
+
+```
+Navegador ──HTTPS──▶ Render (FastAPI) ──SQL──▶ Supabase (PostgreSQL)
+```
+
+> 💡 O **código é o mesmo** do seu PC. O que muda entre os ambientes
+> são só as **variáveis de ambiente** — por isso o `settings.py` lê tudo
+> do ambiente em vez de deixar valores fixos no código.
+
+**Como o deploy acontece**: o Render está ligado ao repositório do
+GitHub com **Auto-Deploy "On Commit"**. A cada `git push` na `master`,
+ele baixa o código, constrói a imagem com o `Dockerfile` e roda o
+**Docker Command** `sh entrypoint.sh`, que aplica as migrações
+(`alembic upgrade head` → cria/atualiza as tabelas no Supabase) e sobe o
+uvicorn. O `sh` na frente é necessário porque o `entrypoint.sh` está no
+Git sem permissão de execução (modo `100644`); chamando pelo `sh`, ela
+não é necessária.
+
+**Variáveis de ambiente no Render** (Settings → Environment):
+
+| Variável | Valor em produção |
+|----------|-------------------|
+| `DATABASE_URL` | Endereço do **Session pooler** do Supabase, com `postgresql+psycopg://` no início |
+| `SECRET_KEY` | Gerada pelo botão *Generate* do Render — **diferente** da do `.env` |
+| `ALGORITHM` | `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` |
+| `PORT` | `8000` (diz ao Render em qual porta a API escuta) |
+
+Outras escolhas feitas na configuração, e o porquê:
+- **Região Ohio (US East) nos dois serviços**: API e banco perto um do
+  outro. Cada consulta ao banco faz uma "viagem" pela rede; se um ficasse
+  nos EUA e o outro no Brasil, cada requisição ficaria bem mais lenta.
+- **Session pooler, e não a conexão direta**: a conexão direta do
+  Supabase só funciona por **IPv6**, e o Render só sai por **IPv4**. O
+  pooler é um intermediário que aceita IPv4.
+- **Senha do banco só com letras e números**: o `migrations/env.py` passa
+  a URL para o Alembic com `set_main_option`, que trata `%` como caractere
+  especial. Uma senha com símbolos precisaria ser codificada na URL
+  (`@` vira `%40`...) e quebraria as migrações.
+- **`SECRET_KEY` diferente da local**: quem conhece a chave consegue
+  fabricar tokens válidos para qualquer usuário. Com chaves separadas, um
+  vazamento no ambiente de estudo não afeta a API publicada. (Efeito
+  colateral esperado: um token gerado localmente não vale no Render.)
+- **Data API do Supabase desligada**: ela criaria uma API REST pública
+  direto nas tabelas (inclusive `users`, com os hashes das senhas),
+  passando por fora das regras de login e autorização da sua API.
+- **GitHub do Supabase desconectado**: aquilo serve para o Supabase
+  aplicar migrações próprias; aqui quem cuida do esquema é o Alembic.
+- **Health Check Path `/`**: o Render chama a rota raiz de tempos em
+  tempos para saber se a API está viva.
+
+> ⚠️ **Limites dos planos gratuitos**:
+> - O Render "**adormece**" a API após ~15 min sem acesso; a primeira
+>   requisição depois disso pode levar **50 segundos ou mais**.
+> - O Supabase pode **pausar** o projeto após ~1 semana sem uso. Se a
+>   API começar a dar erro 500, abra o painel do Supabase e clique em
+>   **Restore**.
+
 ### `README.md`
 Está vazio no momento — ainda não há documentação escrita sobre o projeto.
-Quando for publicar no GitHub, vale preencher (veja o fim deste guia).
+Como o projeto já está no GitHub, vale preencher (veja o fim deste guia).
 
 ### `.coverage`
 Arquivo binário gerado automaticamente pelo `pytest-cov` com os dados
@@ -781,6 +909,10 @@ O que já está pronto:
 - ✅ **Lista de tarefas** por usuário, com filtros, paginação e PATCH.
 - ✅ **Testes automatizados** isolados, com tabelas recriadas a cada
   teste.
+- ✅ **Integração contínua** com GitHub Actions: a cada push, o
+  pipeline instala tudo, roda o Ruff e os testes.
+- ✅ **Publicada na internet**: API no Render e banco no Supabase, com
+  deploy automático a cada push na `master`.
 
 Pontos que ainda podem evoluir (alguns aparecem nas próximas aulas do
 curso):
@@ -788,5 +920,9 @@ curso):
   não revelar quais e-mails estão cadastrados.
 - Criar um `.dockerignore` e um `.gitattributes` (`*.sh text eol=lf`),
   e fixar a versão da imagem `postgres` no `compose.yaml`.
+- No CI, trocar o passo de format por `ruff format --check`, para o
+  pipeline falhar quando houver código sem formatação.
+- No Render, mudar o Auto-Deploy de "On Commit" para "After CI Checks
+  Pass": hoje ele publica mesmo se o pipeline do GitHub falhar.
 - Escrever o `README.md` (o que o projeto faz, como instalar, como rodar e
   testar) — importante para o portfólio no GitHub.
