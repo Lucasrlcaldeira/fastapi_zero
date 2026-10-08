@@ -1,29 +1,63 @@
 name: pipeline
+# Nome do workflow, que aparece na aba "Actions" do GitHub.
 on: [pull_request, push]
+# Gatilhos: o pipeline roda a cada "push" (envio de commits) e a cada
+# pull request. Assim todo código novo é verificado automaticamente.
 
 jobs:
+  # Um workflow é dividido em "jobs" (trabalhos). Aqui só existe um.
   test:
     runs-on: ubuntu-latest
+    # O GitHub cria uma máquina virtual Linux NOVA e vazia para rodar o
+    # job. Por isso é preciso instalar tudo do zero nos passos abaixo. Ela
+    # já vem com Docker, então o testcontainers funciona nos testes.
 
     steps:
+      # Os passos ("steps") rodam em ordem. Se um falhar, o job para e o
+      # pipeline fica vermelho (❌) no GitHub.
       - name: Copia os arquivos do repositório
         uses: actions/checkout@v4
+        # "uses" reaproveita uma ação pronta, feita por outra pessoa.
+        # O checkout baixa o código do repositório para dentro da máquina.
 
       - name: Instalar o python
         uses: actions/setup-python@v5
         with:
           python-version: '3.13.14'
+        # "with" passa parâmetros para a ação: aqui, a versão do Python.
 
       - name: Instalar o poetry
         run: pipx install poetry
+        # "run" executa um comando no terminal da máquina. O pipx instala
+        # programas Python isolados, ideal para ferramentas como o Poetry.
 
       - name: Instalar dependências
         run: poetry install
+        # Lê o pyproject.toml/poetry.lock e instala todas as dependências,
+        # inclusive as de desenvolvimento (Ruff, Pytest...).
+
+      - name: Executar o format
+        run: poetry run task format
+        # Roda o "pre_format" (ruff check --fix) e depois o "ruff format".
+        # Atenção: no CI ele CORRIGE os arquivos na máquina virtual em vez
+        # de reclamar, então código mal formatado não faz o pipeline falhar.
+        # Para só verificar, o comando seria "ruff format --check".
+
+      - name: Executar o linter
+        run: poetry run task lint
+        # Roda o "ruff check": procura erros e más práticas no código. Se
+        # encontrar algum, o passo falha.
 
       - name: Executar testes
         run: poetry run task test
+        # Roda o "pre_test" (o lint de novo), os testes com cobertura e o
+        # "post_test" (gera o relatório HTML de cobertura).
 
     env:
+      # Variáveis de ambiente do job. O ".env" não vai para o GitHub (está
+      # no .gitignore), mas o Settings exige essas variáveis. Então elas
+      # são cadastradas como "secrets" em Settings > Secrets and variables
+      # > Actions, e lidas daqui com ${{ secrets.NOME }}.
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       ALGORITHM: ${{ secrets.ALGORITHM }}
